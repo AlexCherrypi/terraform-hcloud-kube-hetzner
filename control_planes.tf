@@ -103,7 +103,13 @@ resource "hcloud_load_balancer_service" "control_plane" {
   listen_port      = "6443"
 
   health_check {
-    protocol = "https"
+    # Hetzner-Cloud-API has tightened validation: `protocol = "https"` is no
+    # longer an accepted value (only `tcp` and `http`). Preserve the original
+    # intent — HTTPS-probe against k3s `/readyz`, accept 200/401 as alive,
+    # don't strictly validate the self-signed cluster cert — by switching to
+    # `protocol = "http"` with `http.tls = true`. This still speaks TLS to
+    # k3s on 6443 but uses the modern API field semantics.
+    protocol = "http"
     port     = 6443
     interval = tonumber(trimsuffix(var.load_balancer_health_check_interval, "s"))
     timeout  = tonumber(trimsuffix(var.load_balancer_health_check_timeout, "s"))
@@ -111,7 +117,7 @@ resource "hcloud_load_balancer_service" "control_plane" {
 
     http {
       path         = "/readyz"
-      tls          = false
+      tls          = true
       status_codes = ["200", "401"]
     }
   }

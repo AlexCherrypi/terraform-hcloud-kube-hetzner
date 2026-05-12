@@ -160,10 +160,15 @@ resource "hcloud_server" "nat_router" {
     ipv6         = hcloud_primary_ip.nat_router_primary_ipv6[count.index].id
   }
 
+  # hcloud-provider >= 1.63 rejects `network_id` and `subnet_id` both being
+  # set on a server's `network` block. After creation, the Hetzner-API
+  # auto-derives `subnet_id` from the assigned IP, so a subsequent refresh
+  # populates state with both fields and provider validation fails. Pin
+  # `subnet_id` explicitly here (provider docs: "subnet_id is recommended").
   network {
-    network_id = data.hcloud_network.k3s.id
-    ip         = local.nat_router_ip[count.index]
-    alias_ips  = []
+    subnet_id = hcloud_network_subnet.nat_router[count.index].id
+    ip        = local.nat_router_ip[count.index]
+    alias_ips = []
   }
 
   labels = merge(
