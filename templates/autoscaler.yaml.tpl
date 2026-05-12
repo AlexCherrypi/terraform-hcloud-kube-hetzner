@@ -117,6 +117,26 @@ subjects:
     namespace: kube-system
 
 ---
+# Cluster-Autoscaler config as a Secret instead of an env var.
+# Background: HCLOUD_CLUSTER_CONFIG carries a ~22 KB cloud-init copy per
+# pool (~99% identical across pools). With ≥6 pools the env var exceeds the
+# Linux kernel limit MAX_ARG_STRLEN (128 KB) and the CA pod fails with
+# "exec ./cluster-autoscaler: argument list too long".
+# File-mount via Secret bypasses the limit entirely (Secrets are capped at
+# 1 MB). The CA already supports this via HCLOUD_CLUSTER_CONFIG_FILE
+# (see cloudprovider/hetzner/hetzner_manager.go).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-autoscaler-config
+  namespace: kube-system
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+type: Opaque
+data:
+  config.json: ${cluster_config}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -136,6 +156,13 @@ spec:
       annotations:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '8085'
+        # Rolling-restart trigger: when the cluster-autoscaler-config Secret
+        # content changes (new pool added, cloud-init updated, etc.), this
+        # checksum changes too → the pod template hash changes → Deployment
+        # rolls the pod automatically. Without this, the CA would keep running
+        # against the stale config until manually restarted, since it only
+        # reads HCLOUD_CLUSTER_CONFIG_FILE at startup.
+        checksum/config: '${cluster_config_sha256}'
     spec:
       serviceAccountName: cluster-autoscaler
       tolerations:
@@ -186,8 +213,12 @@ spec:
                   key: token
           - name: HCLOUD_CLOUD_INIT
             value: ${cloudinit_config}
-          - name: HCLOUD_CLUSTER_CONFIG
-            value: ${cluster_config}
+          # HCLOUD_CLUSTER_CONFIG_FILE instead of HCLOUD_CLUSTER_CONFIG (env var):
+          # bypasses the Linux MAX_ARG_STRLEN limit (128 KB), so the number of
+          # autoscaler nodepools is no longer constrained by env-var size.
+          # See the cluster-autoscaler-config Secret above.
+          - name: HCLOUD_CLUSTER_CONFIG_FILE
+            value: /etc/hetzner-autoscaler/config.json
           - name: HCLOUD_SSH_KEY
             value: '${ssh_key}'
           - name: HCLOUD_IMAGE
@@ -208,8 +239,17 @@ spec:
             - name: ssl-certs
               mountPath: /etc/ssl/certs
               readOnly: true
+            - name: cluster-config
+              mountPath: /etc/hetzner-autoscaler
+              readOnly: true
           imagePullPolicy: "Always"
       volumes:
         - name: ssl-certs
           hostPath:
             path: "/etc/ssl/certs" # right place on MicroOS?
+        - name: cluster-config
+          secret:
+            secretName: cluster-autoscaler-config
+            items:
+              - key: config.json
+                path: config.json

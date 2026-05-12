@@ -42,6 +42,7 @@ locals {
       ipv4_subnet_id                             = data.hcloud_network.k3s.id
       snapshot_id                                = local.first_nodepool_snapshot_id
       cluster_config                             = base64encode(jsonencode(local.cluster_config))
+      cluster_config_sha256                      = sha256(jsonencode(local.cluster_config))
       firewall_id                                = hcloud_firewall.k3s.id
       cluster_name                               = local.cluster_prefix
       node_pools                                 = var.autoscaler_nodepools
@@ -84,8 +85,14 @@ resource "terraform_data" "configure_autoscaler" {
   }
 
   # Create/Apply the definition
+  # Server-side apply avoids the 256 KB limit on the
+  # `kubectl.kubernetes.io/last-applied-configuration` annotation that
+  # client-side apply writes to every resource. With our cluster-autoscaler-
+  # config Secret holding the full pool-config JSON (can grow to hundreds
+  # of KB), client-side apply would fail with
+  # "metadata.annotations: Too long: may not be more than 262144 bytes".
   provisioner "remote-exec" {
-    inline = ["kubectl apply -f /tmp/autoscaler.yaml"]
+    inline = ["kubectl apply --server-side --force-conflicts -f /tmp/autoscaler.yaml"]
   }
 
   depends_on = [
