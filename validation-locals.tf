@@ -334,6 +334,38 @@ locals {
     local.validation_external_autoscaler_network_ids
   ))
 
+  # Cluster Autoscaler's --max-nodes-total caps the number of nodes it scales
+  # the whole cluster to (0 = unlimited). It counts every registered node,
+  # control planes and static agents included, so the autoscaler can never add
+  # more than max-nodes-total minus the static nodes, however high the
+  # per-pool max_nodes are. Repeated flags: the last value wins. Other spellings
+  # (e.g. a separate value argument) are not recognised and keep the stricter
+  # per-pool sum.
+  validation_cluster_autoscaler_max_nodes_total_values = flatten([
+    for arg in var.cluster_autoscaler_extra_args :
+    regexall("^--max-nodes-total=([0-9]+)$", arg)
+  ])
+
+  validation_cluster_autoscaler_max_nodes_total = (
+    length(local.validation_cluster_autoscaler_max_nodes_total_values) > 0
+    ? tonumber(local.validation_cluster_autoscaler_max_nodes_total_values[length(local.validation_cluster_autoscaler_max_nodes_total_values) - 1])
+    : 0
+  )
+
+  validation_autoscaler_node_budget = (
+    local.validation_cluster_autoscaler_max_nodes_total > 0
+    ? max(0, local.validation_cluster_autoscaler_max_nodes_total - local.validation_control_plane_count - local.validation_agent_count)
+    : local.validation_autoscaler_max_count
+  )
+
+  validation_autoscaler_max_nodes_by_network = {
+    for network_id in local.validation_referenced_network_ids :
+    network_id => sum(concat([0], [
+      for nodepool in var.autoscaler_nodepools :
+      (nodepool.network_scope == "primary" ? 0 : coalesce(nodepool.network_id, 0)) == network_id ? nodepool.max_nodes : 0
+    ]))
+  }
+
   validation_network_attachment_count_by_network = {
     for network_id in local.validation_referenced_network_ids :
     network_id => (
@@ -369,10 +401,7 @@ locals {
           ]
         )
       ]))) + (
-      sum(concat([0], [
-        for nodepool in var.autoscaler_nodepools :
-        (nodepool.network_scope == "primary" ? 0 : coalesce(nodepool.network_id, 0)) == network_id ? nodepool.max_nodes : 0
-      ]))
+      min(local.validation_autoscaler_max_nodes_by_network[network_id], local.validation_autoscaler_node_budget)
       ) + (
       network_id == 0 && var.nat_router != null ? (try(var.nat_router.enable_redundancy, false) ? 2 : 1) : 0
       ) + (
