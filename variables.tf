@@ -625,7 +625,7 @@ variable "kubernetes_api_port" {
 
 
 variable "nat_router" {
-  description = "Do you want to pipe all egress through a single nat router which is to be constructed? Note: Requires enable_control_plane_load_balancer=true unless node_transport_mode=\"tailscale\" provides the API/kubeconfig path through the tailnet. Automatically forwards kubernetes_api_port to the control plane LB when control_plane_load_balancer_enable_public_network=false. extra_runcmd commands run as root after NAT router cloud-init completes and rerun when the command list changes."
+  description = "Do you want to pipe all egress through a single nat router which is to be constructed? Note: Requires enable_control_plane_load_balancer=true unless node_transport_mode=\"tailscale\" provides the API/kubeconfig path through the tailnet. Automatically forwards kubernetes_api_port to the control plane LB when control_plane_load_balancer_enable_public_network=false. extra_runcmd commands run as root after NAT router cloud-init completes and rerun when the command list changes. delete_protection enables Hetzner delete and rebuild protection on the router servers and delete protection on their primary IPs; disable it explicitly before an intentional replacement or destroy."
   nullable    = true
   default     = null
   type = object({
@@ -636,6 +636,7 @@ variable "nat_router" {
     enable_redundancy = optional(bool, false)
     standby_location  = optional(string, "")
     extra_runcmd      = optional(list(string), [])
+    delete_protection = optional(bool, false)
   })
 
   validation {
