@@ -61,6 +61,29 @@ download_release_metadata() {
     --output "$destination" "$url"
 }
 
+# A snapshot build may preload the pinned installer and payload of one exact
+# version (packer-template kubernetes_preload_version). They are used only when
+# their digest equals the pin, so a stale or damaged preload falls back to the
+# download and can never be installed.
+preload_root=${KH_KUBERNETES_PRELOAD_DIR:-/var/lib/kube-hetzner/preload}
+
+use_preloaded_file() {
+  preloaded_file=$1
+  destination=$2
+  expected=$3
+  label=$4
+
+  [ -n "$expected" ] || return 1
+  [ -f "$preloaded_file" ] && [ ! -L "$preloaded_file" ] || return 1
+  preloaded_sha256=$(sha256sum "$preloaded_file" | awk '{print $1}')
+  if [ "$preloaded_sha256" != "$expected" ]; then
+    echo "WARNING: preloaded $label does not match its pinned SHA-256; downloading it instead" >&2
+    return 1
+  fi
+  cp "$preloaded_file" "$destination"
+  echo "Using the preloaded $label from $preloaded_file" >&2
+}
+
 verify_sha256() {
   file=$1
   expected=$2
@@ -243,7 +266,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-download_immutable_installer "$installer" "$installer_url"
+preload_dir=$preload_root/$distribution/$version
+if [ "$distribution" != k3s ] ||
+  ! use_preloaded_file "$preload_dir/install.sh" "$installer" "$installer_sha256" "$distribution installer"; then
+  download_immutable_installer "$installer" "$installer_url"
+fi
 verify_sha256 "$installer" "$installer_sha256" "$distribution installer"
 
 version_urlsafe=$(printf '%s' "$version" | sed 's/+/%2B/g')
@@ -258,10 +285,14 @@ case $distribution in
 
     payload=$work_dir/$asset_name
     payload_url="https://github.com/k3s-io/k3s/releases/download/$version_urlsafe/$asset_name"
-    if [ -z "$expected_payload_sha256" ]; then
-      expected_payload_sha256=$(resolve_release_payload_sha256 k3s "$version_urlsafe" "$architecture" "$asset_name")
+    # Only a pinned digest can accept the preload; without a pin the digest
+    # itself has to come from the release's checksum publication.
+    if ! use_preloaded_file "$preload_dir/$asset_name" "$payload" "$expected_payload_sha256" "k3s payload"; then
+      if [ -z "$expected_payload_sha256" ]; then
+        expected_payload_sha256=$(resolve_release_payload_sha256 k3s "$version_urlsafe" "$architecture" "$asset_name")
+      fi
+      download_release_payload "$payload" "$payload_url"
     fi
-    download_release_payload "$payload" "$payload_url"
     verify_sha256 "$payload" "$expected_payload_sha256" "k3s payload"
     install -o root -g root -m 0755 "$payload" /usr/local/bin/k3s
 

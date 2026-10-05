@@ -625,7 +625,7 @@ variable "kubernetes_api_port" {
 
 
 variable "nat_router" {
-  description = "Do you want to pipe all egress through a single nat router which is to be constructed? Note: Requires enable_control_plane_load_balancer=true unless node_transport_mode=\"tailscale\" provides the API/kubeconfig path through the tailnet. Automatically forwards kubernetes_api_port to the control plane LB when control_plane_load_balancer_enable_public_network=false. extra_runcmd commands run as root after NAT router cloud-init completes and rerun when the command list changes."
+  description = "Do you want to pipe all egress through a single nat router which is to be constructed? Note: Requires enable_control_plane_load_balancer=true unless node_transport_mode=\"tailscale\" provides the API/kubeconfig path through the tailnet. Automatically forwards kubernetes_api_port to the control plane LB when control_plane_load_balancer_enable_public_network=false. extra_runcmd commands run as root after NAT router cloud-init completes and rerun when the command list changes. delete_protection enables Hetzner delete and rebuild protection on the router servers and delete protection on their primary IPs; disable it explicitly before an intentional replacement or destroy."
   nullable    = true
   default     = null
   type = object({
@@ -636,6 +636,7 @@ variable "nat_router" {
     enable_redundancy = optional(bool, false)
     standby_location  = optional(string, "")
     extra_runcmd      = optional(list(string), [])
+    delete_protection = optional(bool, false)
   })
 
   validation {
@@ -904,12 +905,13 @@ variable "primary_ip_pool" {
 }
 
 variable "control_plane_nodepools" {
-  description = "Control plane nodepools. Optional annotations are Kubernetes Node annotations applied once by a node-local systemd oneshot when each node joins; later map changes affect only newly created or replaced nodes and do not remove annotations from existing Nodes. Per-node annotations merge with and override nodepool annotations."
+  description = "Control plane nodepools. Optional annotations are Kubernetes Node annotations applied once by a node-local systemd oneshot when each node joins; later map changes affect only newly created or replaced nodes and do not remove annotations from existing Nodes. Per-node annotations merge with and override nodepool annotations. delete_protection enables Hetzner delete and rebuild protection on the control plane servers (as on agent nodepools); disable it explicitly before an intentional replacement or destroy."
   type = list(object({
     name                  = string
     server_type           = string
     location              = string
     backups               = optional(bool)
+    delete_protection     = optional(bool, false)
     floating_ip           = optional(bool, false)
     floating_ip_id        = optional(number, null)
     labels                = list(string)
@@ -947,6 +949,7 @@ variable "control_plane_nodepools" {
       server_type           = optional(string)
       location              = optional(string)
       backups               = optional(bool)
+      delete_protection     = optional(bool)
       floating_ip           = optional(bool)
       floating_ip_id        = optional(number, null)
       labels                = optional(list(string))
@@ -1620,6 +1623,24 @@ variable "agent_nodepools" {
     error_message = "Each attached_volumes entry in agent_nodepools must have size between 10 and 10240 GB, filesystem in [ext4,xfs], and a mount_path under /var without '.' or '..'."
   }
 
+}
+
+variable "autoscaler_image_selector" {
+  description = "Optional Hetzner label selector per architecture (amd64, arm64) written into the cluster autoscaler's imagesForArch instead of the snapshot ID. The autoscaler resolves the selector on every scale-up and takes the newest available snapshot of that architecture carrying the labels, so an image can be released or withdrawn by moving a label on the snapshot, without re-rendering the autoscaler configuration or restarting it. Null keeps the snapshot ID for that architecture."
+  type = object({
+    amd64 = optional(string)
+    arm64 = optional(string)
+  })
+  default  = {}
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for selector in [var.autoscaler_image_selector.amd64, var.autoscaler_image_selector.arm64] :
+      selector == null || can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]*=[A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._/-]*=[A-Za-z0-9._-]*)*$", selector))
+    ])
+    error_message = "autoscaler_image_selector values must be null or a Hetzner equality label selector (key=value[,key=value]) such as example.com/release=true; a bare word would be looked up as an image name first."
+  }
 }
 
 variable "cluster_autoscaler_image" {

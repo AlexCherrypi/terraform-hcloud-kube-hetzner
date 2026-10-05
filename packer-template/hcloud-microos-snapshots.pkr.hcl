@@ -238,6 +238,80 @@ variable "kernel_type" {
   }
 }
 
+# Hooks for automated snapshot pipelines (for example a cluster-side image bot).
+# Every default keeps the previous behaviour.
+
+variable "upgrade_packages" {
+  type        = bool
+  default     = false
+  description = "Run transactional-update dup before installing the needed packages, so the snapshot carries the newest packages and kernel of the configured repositories instead of the appliance state."
+}
+
+variable "extra_snapshot_labels" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Hetzner labels for the snapshot. Keys of the built-in labels (creator, microos-snapshot, kube-hetzner/*) are rejected."
+
+  validation {
+    condition = alltrue([
+      for key, value in var.extra_snapshot_labels :
+      can(regex("^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$", key))
+      && can(regex("^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$", value))
+      && !contains(["creator", "microos-snapshot"], key)
+      && !can(regex("^kube-hetzner/", key))
+    ])
+    error_message = "The extra_snapshot_labels must use valid Hetzner label keys and values and must not override the built-in labels."
+  }
+}
+
+variable "extra_server_labels" {
+  type        = map(string)
+  default     = {}
+  description = "Hetzner labels for the temporary build server and its temporary SSH key, so that an external reaper can recognise the leftovers of an interrupted build."
+
+  validation {
+    condition = alltrue([
+      for key, value in var.extra_server_labels :
+      can(regex("^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$", key))
+      && can(regex("^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$", value))
+    ])
+    error_message = "The extra_server_labels must use valid Hetzner label keys and values."
+  }
+}
+
+variable "public_ipv4" {
+  type        = string
+  default     = ""
+  description = "ID, name or address of a pre-allocated Hetzner Primary IPv4 in the build location for the build server. A fixed address lets a strict egress firewall allow SSH to exactly this /32. Empty assigns a fresh address per build."
+}
+
+variable "kubernetes_preload_version" {
+  type        = string
+  default     = ""
+  description = "k3s release tag (for example v1.36.3+k3s1) to preload into the snapshot together with the pinned k3s installer. The module's node installer uses the preloaded files instead of downloading them from GitHub when the node installs exactly this version and both digests match its pins. Empty preloads nothing. Requires selinux_package_to_install = k3s."
+
+  validation {
+    condition     = var.kubernetes_preload_version == "" || can(regex("^v[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9.-]+)?[+]k3s[0-9]+$", var.kubernetes_preload_version))
+    error_message = "The kubernetes_preload_version must be empty or a k3s release tag such as v1.36.3+k3s1."
+  }
+}
+
+variable "kubernetes_preload_sha256" {
+  type        = map(string)
+  default     = {}
+  description = "Reviewed SHA-256 of the k3s payload per architecture (amd64, arm64) for kubernetes_preload_version. Use the digests of the module release manifest (k3s_release_sha256_manifest in locals.tf); the build fails when the digest of its architecture is missing or does not match."
+
+  validation {
+    condition = alltrue([
+      for architecture, digest in var.kubernetes_preload_sha256 :
+      contains(["amd64", "arm64"], architecture)
+      && can(regex("^[0-9a-f]{64}$", digest))
+      && digest != "0000000000000000000000000000000000000000000000000000000000000000"
+    ])
+    error_message = "The kubernetes_preload_sha256 keys must be amd64 or arm64 and the values non-zero lowercase 64-character SHA-256 digests."
+  }
+}
+
 locals {
   snapshot_build_timestamp = formatdate("YYYYMMDD-hhmmss", timestamp())
   snapshot_build_id        = substr(replace(uuidv4(), "-", ""), 0, 12)
@@ -280,6 +354,18 @@ locals {
   rancher_rpm_verifier_base64      = filebase64("${path.root}/scripts/verify-rancher-rpm.sh")
   opensuse_microos_x86_image_path  = "/root/openSUSE-MicroOS.x86_64-ContainerHost-OpenStack-Cloud.qcow2"
   opensuse_microos_arm_image_path  = "/root/openSUSE-MicroOS.aarch64-ContainerHost-OpenStack-Cloud.qcow2"
+
+  # Must equal K3S_INSTALLER_COMMIT and K3S_INSTALLER_SHA256 in the module's
+  # scripts/install-verified-kubernetes.sh, which looks for the preload in
+  # kubernetes_preload_dir (scripts/tests/test_kubernetes_preload.sh checks both).
+  k3s_installer_commit   = "2d0f82fa2f933cd227fe38e1482558ce4769f464"
+  k3s_installer_sha256   = "ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
+  kubernetes_preload_dir = "/var/lib/kube-hetzner/preload/k3s/${var.kubernetes_preload_version}"
+  kubernetes_preload_snapshot_labels = var.kubernetes_preload_version == "" ? {} : {
+    "kube-hetzner/kubernetes-preload" = replace(var.kubernetes_preload_version, "+", "-")
+  }
+
+  upgrade_packages_command = var.upgrade_packages ? "transactional-update --continue dup" : "true"
 
   kernel_package_list = var.kernel_type == "longterm" ? ["kernel-longterm"] : []
 
@@ -404,6 +490,7 @@ locals {
   install_packages = <<-EOT
     set -ex
     echo "First reboot successful, installing needed packages..."
+    ${local.upgrade_packages_command}
     transactional-update --continue pkg install -y ${local.needed_packages}
     transactional-update --continue shell <<-'EOF'
     set -euo pipefail
@@ -553,10 +640,45 @@ EOF
     esac
   EOT
 
+  # Runs on the live system: /var is a persistent subvolume outside the
+  # transactional root and is part of the snapshot.
+  kubernetes_preload_commands = var.kubernetes_preload_version == "" ? "true" : <<-EOT
+    [ '${var.selinux_package_to_install}' = k3s ] \
+      || { echo "ERROR: kubernetes_preload_version requires selinux_package_to_install = k3s" >&2; exit 1; }
+    case "$(uname -m)" in
+      x86_64) preload_asset=k3s; preload_sha256='${lookup(var.kubernetes_preload_sha256, "amd64", "")}' ;;
+      aarch64) preload_asset=k3s-arm64; preload_sha256='${lookup(var.kubernetes_preload_sha256, "arm64", "")}' ;;
+      *) echo "ERROR: unsupported architecture for the Kubernetes preload" >&2; exit 1 ;;
+    esac
+    [ -n "$preload_sha256" ] \
+      || { echo "ERROR: kubernetes_preload_sha256 has no digest for this architecture" >&2; exit 1; }
+    preload_dir='${local.kubernetes_preload_dir}'
+    preload_version_urlsafe="$(printf '%s' '${var.kubernetes_preload_version}' | sed 's/+/%2B/g')"
+    install -d -m 0755 "$preload_dir"
+    curl -fsS --proto '=https' --tlsv1.2 --max-redirs 0 --retry 3 \
+      --connect-timeout 20 --max-time 300 \
+      --output "$preload_dir/install.sh.part" \
+      "https://raw.githubusercontent.com/k3s-io/k3s/${local.k3s_installer_commit}/install.sh"
+    printf '%s  %s\n' '${local.k3s_installer_sha256}' "$preload_dir/install.sh.part" | sha256sum -c - \
+      || { echo "ERROR: preloaded k3s installer SHA-256 mismatch" >&2; exit 1; }
+    curl -fsS --proto '=https' --proto-redir '=https' --tlsv1.2 --location --retry 3 \
+      --connect-timeout 20 --max-time 900 --max-filesize 1073741824 \
+      --output "$preload_dir/$preload_asset.part" \
+      "https://github.com/k3s-io/k3s/releases/download/$preload_version_urlsafe/$preload_asset"
+    printf '%s  %s\n' "$preload_sha256" "$preload_dir/$preload_asset.part" | sha256sum -c - \
+      || { echo "ERROR: preloaded k3s payload SHA-256 mismatch" >&2; exit 1; }
+    mv -f "$preload_dir/install.sh.part" "$preload_dir/install.sh"
+    mv -f "$preload_dir/$preload_asset.part" "$preload_dir/$preload_asset"
+    chmod 0644 "$preload_dir/install.sh"
+    chmod 0755 "$preload_dir/$preload_asset"
+  EOT
+
   finalize_snapshot = <<-EOT
     set -ex
     echo "Second reboot successful, verifying the baked SELinux state before final transactional cleanup..."
     ${local.verify_baked_selinux_state}
+
+    ${local.kubernetes_preload_commands}
 
     transactional-update --continue shell <<-'EOF'
     set -eux
@@ -615,7 +737,11 @@ source "hcloud" "microos-x86-snapshot" {
   rescue      = "linux64"
   location    = var.x86_location
   server_type = var.x86_server_type # disk size of >= 40GiB is needed to install the MicroOS image
-  snapshot_labels = {
+
+  public_ipv4     = var.public_ipv4 != "" ? var.public_ipv4 : null
+  server_labels   = var.extra_server_labels
+  ssh_keys_labels = var.extra_server_labels
+  snapshot_labels = merge(var.extra_snapshot_labels, local.kubernetes_preload_snapshot_labels, {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
     "kube-hetzner/os"         = "microos"
@@ -623,7 +749,7 @@ source "hcloud" "microos-x86-snapshot" {
     "kube-hetzner/built-at"   = local.snapshot_build_timestamp
     "kube-hetzner/build-id"   = local.snapshot_build_id
     "kube-hetzner/k8s-distro" = var.selinux_package_to_install
-  }
+  })
   snapshot_name = "OpenSUSE MicroOS x86 ${upper(var.selinux_package_to_install)} ${local.snapshot_build_timestamp}-${local.snapshot_build_id} by Kube-Hetzner"
   ssh_username  = "root"
   token         = var.hcloud_token
@@ -635,7 +761,11 @@ source "hcloud" "microos-arm-snapshot" {
   rescue      = "linux64"
   location    = var.arm_location
   server_type = var.arm_server_type # disk size of >= 40GiB is needed to install the MicroOS image
-  snapshot_labels = {
+
+  public_ipv4     = var.public_ipv4 != "" ? var.public_ipv4 : null
+  server_labels   = var.extra_server_labels
+  ssh_keys_labels = var.extra_server_labels
+  snapshot_labels = merge(var.extra_snapshot_labels, local.kubernetes_preload_snapshot_labels, {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
     "kube-hetzner/os"         = "microos"
@@ -643,7 +773,7 @@ source "hcloud" "microos-arm-snapshot" {
     "kube-hetzner/built-at"   = local.snapshot_build_timestamp
     "kube-hetzner/build-id"   = local.snapshot_build_id
     "kube-hetzner/k8s-distro" = var.selinux_package_to_install
-  }
+  })
   snapshot_name = "OpenSUSE MicroOS ARM ${upper(var.selinux_package_to_install)} ${local.snapshot_build_timestamp}-${local.snapshot_build_id} by Kube-Hetzner"
   ssh_username  = "root"
   token         = var.hcloud_token
