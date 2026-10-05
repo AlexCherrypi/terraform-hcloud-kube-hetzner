@@ -905,12 +905,13 @@ variable "primary_ip_pool" {
 }
 
 variable "control_plane_nodepools" {
-  description = "Control plane nodepools. Optional annotations are Kubernetes Node annotations applied once by a node-local systemd oneshot when each node joins; later map changes affect only newly created or replaced nodes and do not remove annotations from existing Nodes. Per-node annotations merge with and override nodepool annotations."
+  description = "Control plane nodepools. Optional annotations are Kubernetes Node annotations applied once by a node-local systemd oneshot when each node joins; later map changes affect only newly created or replaced nodes and do not remove annotations from existing Nodes. Per-node annotations merge with and override nodepool annotations. delete_protection enables Hetzner delete and rebuild protection on the control plane servers (as on agent nodepools); disable it explicitly before an intentional replacement or destroy."
   type = list(object({
     name                  = string
     server_type           = string
     location              = string
     backups               = optional(bool)
+    delete_protection     = optional(bool, false)
     floating_ip           = optional(bool, false)
     floating_ip_id        = optional(number, null)
     labels                = list(string)
@@ -948,6 +949,7 @@ variable "control_plane_nodepools" {
       server_type           = optional(string)
       location              = optional(string)
       backups               = optional(bool)
+      delete_protection     = optional(bool)
       floating_ip           = optional(bool)
       floating_ip_id        = optional(number, null)
       labels                = optional(list(string))
