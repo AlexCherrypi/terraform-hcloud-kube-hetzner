@@ -238,6 +238,15 @@ variable "kernel_type" {
   }
 }
 
+# Hooks for automated snapshot pipelines (for example a cluster-side image bot).
+# Every default keeps the previous behaviour.
+
+variable "public_ipv4" {
+  type        = string
+  default     = ""
+  description = "ID, name or address of a pre-allocated Hetzner Primary IPv4 in the build location for the build server. A fixed address lets a strict egress firewall allow SSH to exactly this /32. Empty assigns a fresh address per build."
+}
+
 locals {
   snapshot_build_timestamp = formatdate("YYYYMMDD-hhmmss", timestamp())
   snapshot_build_id        = substr(replace(uuidv4(), "-", ""), 0, 12)
@@ -615,6 +624,8 @@ source "hcloud" "microos-x86-snapshot" {
   rescue      = "linux64"
   location    = var.x86_location
   server_type = var.x86_server_type # disk size of >= 40GiB is needed to install the MicroOS image
+
+  public_ipv4 = var.public_ipv4 != "" ? var.public_ipv4 : null
   snapshot_labels = {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
@@ -635,6 +646,8 @@ source "hcloud" "microos-arm-snapshot" {
   rescue      = "linux64"
   location    = var.arm_location
   server_type = var.arm_server_type # disk size of >= 40GiB is needed to install the MicroOS image
+
+  public_ipv4 = var.public_ipv4 != "" ? var.public_ipv4 : null
   snapshot_labels = {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
