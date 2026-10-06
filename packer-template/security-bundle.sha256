@@ -2,7 +2,7 @@
 # Keep this list exact: scripts/install-packer-security-bundle.sh rejects
 # missing, duplicate, or additional entries.
 b1bcbf1e497a2f0e2ccb40da41d5f7d9ecb677155140fd96df4652fb57d85acf  hcloud-leapmicro-snapshots.pkr.hcl
-f32bde398a53507f5ae87525a1f88e6817b569c19fa57ea05eec2532b54f31ef  hcloud-microos-snapshots.pkr.hcl
+b66ee9307c6dc91ef81a18f155abdcb82cda85c79275bdc2d33932e57ddbb4db  hcloud-microos-snapshots.pkr.hcl
 b5745739ebfb95b25b8e810f9bcb847fe750ccda598bd85f02f0e974599a6d7e  keys/opensuse-project-signing-key.asc
 7d2415f7fc532c365c8874bfad966566daaa0d04a9a5ba14d1db6080a9c12629  keys/rancher-ci-signing-key.asc
 254585d32954ef6b2103ec16f0e6e6818b61107ffe024d464a5ae4b6c8eb57b9  scripts/install-packer-security-bundle.sh
