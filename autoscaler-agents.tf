@@ -7,9 +7,13 @@ locals {
 
   # Only include architectures with a resolved snapshot id. This avoids writing empty values
   # into the autoscaler config when the cluster doesn't use that architecture.
+  # A configured autoscaler_image_selector replaces the snapshot id of its architecture: the
+  # autoscaler resolves the selector on every scale-up (newest available snapshot of that
+  # architecture with the labels), so releasing an image means moving a label, not re-rendering.
   imageList = length(var.autoscaler_nodepools) == 0 ? {} : merge(
     local.snapshot_id_by_os[local.first_nodepool_os]["arm"] != "" ? { arm64 = tostring(local.snapshot_id_by_os[local.first_nodepool_os]["arm"]) } : {},
     local.snapshot_id_by_os[local.first_nodepool_os]["x86"] != "" ? { amd64 = tostring(local.snapshot_id_by_os[local.first_nodepool_os]["x86"]) } : {},
+    { for architecture, selector in var.autoscaler_image_selector : architecture => selector if selector != null },
   )
 
   nodeConfigName = var.use_cluster_name_in_node_name ? "${var.cluster_name}-" : ""
