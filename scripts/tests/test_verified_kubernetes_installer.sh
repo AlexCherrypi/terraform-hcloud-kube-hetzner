@@ -373,6 +373,51 @@ if grep -q sha256sum "$KH_TEST_DOWNLOAD_LOG"; then
   exit 1
 fi
 
+# Artifacts preloaded into the snapshot replace the downloads only when they
+# match the pins; anything else falls back to the verified download path.
+export KH_TEST_UNAME=x86_64
+export KH_TEST_ARCH=amd64
+export KH_TEST_EXPECTED_PAYLOAD_SHA="$fake_payload_amd64_sha"
+preload_version_dir="$tmp/preload/k3s/v1.36.3+k3s1"
+mkdir -p "$preload_version_dir"
+cp "$k3s_installer" "$preload_version_dir/install.sh"
+cp "$fake_payload_amd64" "$preload_version_dir/k3s"
+
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$tmp/preload" run_success preloaded-k3s-install \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+if [[ -e $KH_TEST_DOWNLOAD_LOG ]]; then
+  echo "preloaded k3s install still downloaded: $(cat "$KH_TEST_DOWNLOAD_LOG")" >&2
+  exit 1
+fi
+grep -Fq 'Using the preloaded k3s installer' "$tmp/preloaded-k3s-install.out"
+grep -Fq 'Using the preloaded k3s payload' "$tmp/preloaded-k3s-install.out"
+
+printf '%s\n' 'stale preloaded payload' > "$preload_version_dir/k3s"
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$tmp/preload" run_success stale-preloaded-k3s-payload \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+grep -Fq 'preloaded k3s payload does not match its pinned SHA-256' "$tmp/stale-preloaded-k3s-payload.out"
+grep -Fq '/releases/download/v1.36.3%2Bk3s1/k3s' "$KH_TEST_DOWNLOAD_LOG"
+if grep -Fq 'raw.githubusercontent.com' "$KH_TEST_DOWNLOAD_LOG"; then
+  echo "a matching preloaded installer was downloaded again" >&2
+  exit 1
+fi
+
+cp "$fake_payload_amd64" "$preload_version_dir/k3s"
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$tmp/preload" run_success unpinned-k3s-ignores-preload \
+  k3s 'v1.36.3+k3s1' '' '' c2VydmVy
+grep -Fq '/sha256sum-amd64.txt' "$KH_TEST_DOWNLOAD_LOG"
+grep -Fq '/releases/download/v1.36.3%2Bk3s1/k3s' "$KH_TEST_DOWNLOAD_LOG"
+
+rm -f "$preload_version_dir/install.sh"
+ln -s "$k3s_installer" "$preload_version_dir/install.sh"
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$tmp/preload" run_success symlinked-preloaded-installer \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+grep -Fq 'raw.githubusercontent.com/k3s-io/k3s/' "$KH_TEST_DOWNLOAD_LOG"
+
 if rg -n 'get\.k3s\.io|get\.rke2\.io|curl[^\n]*\|[^\n]*(sh|bash)' \
   "$repo_root/locals.tf" "$repo_root/robot-nodes.tf" "$repo_root/output.tf"; then
   echo "mutable curl-pipe installer path remains" >&2
