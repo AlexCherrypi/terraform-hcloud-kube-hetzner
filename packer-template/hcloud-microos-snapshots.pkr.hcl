@@ -238,6 +238,41 @@ variable "kernel_type" {
   }
 }
 
+# Hooks for automated snapshot pipelines (for example a cluster-side image bot).
+# Every default keeps the previous behaviour.
+
+variable "extra_snapshot_labels" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Hetzner labels for the snapshot. Keys of the built-in labels (creator, microos-snapshot, kube-hetzner/*) are rejected."
+
+  validation {
+    condition = alltrue([
+      for key, value in var.extra_snapshot_labels :
+      can(regex("^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$", key))
+      && can(regex("^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$", value))
+      && !contains(["creator", "microos-snapshot"], key)
+      && !can(regex("^kube-hetzner/", key))
+    ])
+    error_message = "The extra_snapshot_labels must use valid Hetzner label keys and values and must not override the built-in labels."
+  }
+}
+
+variable "extra_server_labels" {
+  type        = map(string)
+  default     = {}
+  description = "Hetzner labels for the temporary build server and its temporary SSH key, so that an external reaper can recognise the leftovers of an interrupted build."
+
+  validation {
+    condition = alltrue([
+      for key, value in var.extra_server_labels :
+      can(regex("^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$", key))
+      && can(regex("^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$", value))
+    ])
+    error_message = "The extra_server_labels must use valid Hetzner label keys and values."
+  }
+}
+
 locals {
   snapshot_build_timestamp = formatdate("YYYYMMDD-hhmmss", timestamp())
   snapshot_build_id        = substr(replace(uuidv4(), "-", ""), 0, 12)
@@ -615,7 +650,10 @@ source "hcloud" "microos-x86-snapshot" {
   rescue      = "linux64"
   location    = var.x86_location
   server_type = var.x86_server_type # disk size of >= 40GiB is needed to install the MicroOS image
-  snapshot_labels = {
+
+  server_labels   = var.extra_server_labels
+  ssh_keys_labels = var.extra_server_labels
+  snapshot_labels = merge(var.extra_snapshot_labels, {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
     "kube-hetzner/os"         = "microos"
@@ -623,7 +661,7 @@ source "hcloud" "microos-x86-snapshot" {
     "kube-hetzner/built-at"   = local.snapshot_build_timestamp
     "kube-hetzner/build-id"   = local.snapshot_build_id
     "kube-hetzner/k8s-distro" = var.selinux_package_to_install
-  }
+  })
   snapshot_name = "OpenSUSE MicroOS x86 ${upper(var.selinux_package_to_install)} ${local.snapshot_build_timestamp}-${local.snapshot_build_id} by Kube-Hetzner"
   ssh_username  = "root"
   token         = var.hcloud_token
@@ -635,7 +673,10 @@ source "hcloud" "microos-arm-snapshot" {
   rescue      = "linux64"
   location    = var.arm_location
   server_type = var.arm_server_type # disk size of >= 40GiB is needed to install the MicroOS image
-  snapshot_labels = {
+
+  server_labels   = var.extra_server_labels
+  ssh_keys_labels = var.extra_server_labels
+  snapshot_labels = merge(var.extra_snapshot_labels, {
     microos-snapshot          = "yes"
     creator                   = "kube-hetzner"
     "kube-hetzner/os"         = "microos"
@@ -643,7 +684,7 @@ source "hcloud" "microos-arm-snapshot" {
     "kube-hetzner/built-at"   = local.snapshot_build_timestamp
     "kube-hetzner/build-id"   = local.snapshot_build_id
     "kube-hetzner/k8s-distro" = var.selinux_package_to_install
-  }
+  })
   snapshot_name = "OpenSUSE MicroOS ARM ${upper(var.selinux_package_to_install)} ${local.snapshot_build_timestamp}-${local.snapshot_build_id} by Kube-Hetzner"
   ssh_username  = "root"
   token         = var.hcloud_token
