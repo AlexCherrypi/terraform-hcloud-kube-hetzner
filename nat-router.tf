@@ -155,6 +155,8 @@ resource "hcloud_primary_ip" "nat_router_primary_ipv4" {
   location    = var.nat_router.enable_redundancy && count.index == 1 ? var.nat_router.standby_location : var.nat_router.location
   auto_delete = false
 
+  delete_protection = try(var.nat_router.delete_protection, false)
+
   # Prevent recreation when user changes location after initial creation
   lifecycle {
     ignore_changes = [location]
@@ -169,6 +171,8 @@ resource "hcloud_primary_ip" "nat_router_primary_ipv6" {
   name        = var.nat_router.enable_redundancy ? "${local.nat_router_name}-${random_string.nat_router[count.index].id}-ipv6" : "${var.cluster_name}-nat-router-ipv6"
   location    = var.nat_router.enable_redundancy && count.index == 1 ? var.nat_router.standby_location : var.nat_router.location
   auto_delete = false
+
+  delete_protection = try(var.nat_router.delete_protection, false)
 
   # Prevent recreation when user changes location after initial creation
   lifecycle {
@@ -186,6 +190,11 @@ resource "hcloud_server" "nat_router" {
   firewall_ids = [hcloud_firewall.k3s.id]
   user_data    = data.cloudinit_config.nat_router_config[count.index].rendered
   keep_disk    = false
+
+  # Hetzner requires rebuild protection to follow delete protection.
+  delete_protection  = try(var.nat_router.delete_protection, false)
+  rebuild_protection = try(var.nat_router.delete_protection, false)
+
   public_net {
     ipv4_enabled = true
     ipv4         = hcloud_primary_ip.nat_router_primary_ipv4[count.index].id
