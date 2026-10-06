@@ -58,6 +58,7 @@ module "control_planes" {
   location                      = each.value.location
   server_type                   = each.value.server_type
   backups                       = each.value.backups
+  delete_protection             = each.value.delete_protection
   ipv4_subnet_id                = hcloud_network_subnet.control_plane[local.use_per_nodepool_subnets ? [for i, v in var.control_plane_nodepools : i if v.name == each.value.nodepool_name][0] : 0].id
   dns_servers                   = var.dns_servers
   registries_config             = local.registries_config_effective
