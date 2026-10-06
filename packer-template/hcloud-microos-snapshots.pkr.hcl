@@ -279,6 +279,12 @@ variable "extra_server_labels" {
   }
 }
 
+variable "public_ipv4" {
+  type        = string
+  default     = ""
+  description = "ID, name or address of a pre-allocated Hetzner Primary IPv4 in the build location for the build server. A fixed address lets a strict egress firewall allow SSH to exactly this /32. Empty assigns a fresh address per build."
+}
+
 locals {
   snapshot_build_timestamp = formatdate("YYYYMMDD-hhmmss", timestamp())
   snapshot_build_id        = substr(replace(uuidv4(), "-", ""), 0, 12)
@@ -660,6 +666,7 @@ source "hcloud" "microos-x86-snapshot" {
   location    = var.x86_location
   server_type = var.x86_server_type # disk size of >= 40GiB is needed to install the MicroOS image
 
+  public_ipv4     = var.public_ipv4 != "" ? var.public_ipv4 : null
   server_labels   = var.extra_server_labels
   ssh_keys_labels = var.extra_server_labels
   snapshot_labels = merge(var.extra_snapshot_labels, {
@@ -683,6 +690,7 @@ source "hcloud" "microos-arm-snapshot" {
   location    = var.arm_location
   server_type = var.arm_server_type # disk size of >= 40GiB is needed to install the MicroOS image
 
+  public_ipv4     = var.public_ipv4 != "" ? var.public_ipv4 : null
   server_labels   = var.extra_server_labels
   ssh_keys_labels = var.extra_server_labels
   snapshot_labels = merge(var.extra_snapshot_labels, {
