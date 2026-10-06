@@ -172,6 +172,7 @@ jobs:
           scripts/tests/test_pr_scanner_contract.sh
           scripts/tests/test_release_workflow_contract.sh
           scripts/tests/test_verified_kubernetes_installer.sh
+          scripts/tests/test_kubernetes_preload.sh
 
       - name: Verify pinned Rancher SELinux release artifacts
         run: |
