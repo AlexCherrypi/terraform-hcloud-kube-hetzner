@@ -1622,6 +1622,24 @@ variable "agent_nodepools" {
 
 }
 
+variable "autoscaler_image_selector" {
+  description = "Optional Hetzner label selector per architecture (amd64, arm64) written into the cluster autoscaler's imagesForArch instead of the snapshot ID. The autoscaler resolves the selector on every scale-up and takes the newest available snapshot of that architecture carrying the labels, so an image can be released or withdrawn by moving a label on the snapshot, without re-rendering the autoscaler configuration or restarting it. Null keeps the snapshot ID for that architecture."
+  type = object({
+    amd64 = optional(string)
+    arm64 = optional(string)
+  })
+  default  = {}
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for selector in [var.autoscaler_image_selector.amd64, var.autoscaler_image_selector.arm64] :
+      selector == null || can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]*=[A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._/-]*=[A-Za-z0-9._-]*)*$", selector))
+    ])
+    error_message = "autoscaler_image_selector values must be null or a Hetzner equality label selector (key=value[,key=value]) such as example.com/release=true; a bare word would be looked up as an image name first."
+  }
+}
+
 variable "cluster_autoscaler_image" {
   type        = string
   default     = "registry.k8s.io/autoscaling/cluster-autoscaler"
