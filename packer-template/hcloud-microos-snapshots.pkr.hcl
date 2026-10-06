@@ -238,6 +238,15 @@ variable "kernel_type" {
   }
 }
 
+# Hooks for automated snapshot pipelines (for example a cluster-side image bot).
+# Every default keeps the previous behaviour.
+
+variable "upgrade_packages" {
+  type        = bool
+  default     = false
+  description = "Run transactional-update dup before installing the needed packages, so the snapshot carries the newest packages and kernel of the configured repositories instead of the appliance state."
+}
+
 locals {
   snapshot_build_timestamp = formatdate("YYYYMMDD-hhmmss", timestamp())
   snapshot_build_id        = substr(replace(uuidv4(), "-", ""), 0, 12)
@@ -280,6 +289,8 @@ locals {
   rancher_rpm_verifier_base64      = filebase64("${path.root}/scripts/verify-rancher-rpm.sh")
   opensuse_microos_x86_image_path  = "/root/openSUSE-MicroOS.x86_64-ContainerHost-OpenStack-Cloud.qcow2"
   opensuse_microos_arm_image_path  = "/root/openSUSE-MicroOS.aarch64-ContainerHost-OpenStack-Cloud.qcow2"
+
+  upgrade_packages_command = var.upgrade_packages ? "transactional-update --continue dup" : "true"
 
   kernel_package_list = var.kernel_type == "longterm" ? ["kernel-longterm"] : []
 
@@ -404,6 +415,7 @@ locals {
   install_packages = <<-EOT
     set -ex
     echo "First reboot successful, installing needed packages..."
+    ${local.upgrade_packages_command}
     transactional-update --continue pkg install -y ${local.needed_packages}
     transactional-update --continue shell <<-'EOF'
     set -euo pipefail
