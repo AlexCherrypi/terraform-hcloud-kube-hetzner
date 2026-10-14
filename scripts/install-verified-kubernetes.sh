@@ -84,6 +84,39 @@ use_preloaded_file() {
   echo "Using the preloaded $label from $preloaded_file" >&2
 }
 
+# Prefer the newest preloaded patch release of the same minor that is newer
+# than the pin and matches the manifest its snapshot build wrote.
+select_newer_k3s_preload() {
+  minor=${version%".${version#v*.*.}"} newer_version='' newer_asset=k3s
+  [ "$architecture" = amd64 ] || newer_asset=k3s-arm64
+  for newer_dir in "$preload_root/k3s/$minor".*; do
+    candidate=${newer_dir##*/}
+    printf '%s' "$candidate" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$' || continue
+    # Newer: higher patch, same patch as a pre-release, or higher k3s revision.
+    a=${candidate#"$minor".}
+    b=${newer_version:-$version}
+    b=${b#"$minor".}
+    [ "${a%%+*}" -gt "${b%%[-+]*}" ] || { [ "${a%%+*}" -eq "${b%%[-+]*}" ] &&
+      case $b in *-*) ;; *) [ "${a##*k3s}" -gt "${b##*k3s}" ] ;; esac; } || continue
+    newer_manifest=$newer_dir/manifest newer_payload=$newer_dir/$newer_asset
+    digest=$([ -f "$newer_manifest" ] && [ ! -L "$newer_manifest" ] && awk -F= -v v="$candidate" -v a="$newer_asset" '
+      $1 == "version" { n++; ok += $2 == v } $1 == "asset" { n++; ok += $2 == a } $1 == "sha256" { n++; d = $2 }
+      END { if (n == 3 && ok == 2 && length(d) == 64 && d !~ /[^0-9a-f]/ && d !~ /^0+$/) print d }' "$newer_manifest") || digest=
+    if [ -z "$digest" ] || [ ! -f "$newer_payload" ] || [ -L "$newer_payload" ] ||
+      [ "$(sha256sum "$newer_payload" | awk '{print $1}')" != "$digest" ]; then
+      echo "WARNING: ignoring preloaded k3s $candidate: bad manifest or payload" >&2
+      continue
+    fi
+    newer_version=$candidate newer_sha256=$digest
+  done
+  if [ -n "$newer_version" ]; then
+    echo "Installing preloaded k3s $newer_version, newer than $version" >&2
+    version=$newer_version expected_payload_sha256=$newer_sha256
+  else
+    echo "No preloaded k3s newer than $version" >&2
+  fi
+}
+
 verify_sha256() {
   file=$1
   expected=$2
@@ -266,6 +299,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+if [ "$distribution" = k3s ]; then
+  select_newer_k3s_preload
+fi
 preload_dir=$preload_root/$distribution/$version
 if [ "$distribution" != k3s ] ||
   ! use_preloaded_file "$preload_dir/install.sh" "$installer" "$installer_sha256" "$distribution installer"; then

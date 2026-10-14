@@ -45,6 +45,17 @@ The sensitive `join_script_external` output uses the same verified K3s path and 
 
 When reviewing a new independent pin, use the exact official release tag and asset name, compare the downloaded artifact with the official release publication, and commit the expected digest in operator configuration or the module manifest. The compatibility fallback verifies transport integrity and release consistency, but it is not independent of the release authority because the payload and checksum are fetched together.
 
+## Snapshot preload
+
+A MicroOS snapshot built with `kubernetes_preload_version` and `kubernetes_preload_sha256` carries the pinned K3s installer and one K3s payload under `/var/lib/kube-hetzner/preload/k3s/<version>/`, plus a `manifest` (`version=`, `asset=`, `sha256=`) that the build writes after both digests were verified. The launcher then:
+
+1. installs the newest preloaded release of the bootstrap version's minor that is newer than the bootstrap version, when its payload matches its manifest (64 lowercase hex digits, not all zero, `version` and `asset` equal to the directory and the node's architecture). A snapshot can so carry the head of the channel the upgrade plans follow, and a new node joins on that release instead of being restarted by the System Upgrade Controller right after joining;
+2. otherwise uses the preload of exactly the bootstrap version when both digests equal the pins, and otherwise downloads and verifies as described above.
+
+Other minors, older releases, pre-releases and preloads without a valid manifest are never installed through the first path. Every K3s install logs which path it took. The manifest digest is as trustworthy as the snapshot that carries it: it records the verification done at build time.
+
+The launcher cannot check version skew at boot: the API server does not answer anonymous requests, and the first server has no peer to compare with. Release a snapshot with a newer preload for new nodes only once every control plane runs at least that version, because a kubelet must not be newer than the API server it joins.
+
 ## Upgrade compatibility
 
 Existing custom exact K3s/RKE2 version configurations continue to plan without a new required input and do not recreate running nodes or HCloud resources. Operators following a channel receive the channel snapshot reviewed with their module version for new-node bootstrap; upgrading the module advances that reviewed snapshot. Before adding or replacing a node after the live channel has advanced substantially, update the module first so the replacement's reviewed bootstrap release remains within Kubernetes version-skew policy for the running cluster. Adding an independent digest map changes only bootstrap verification for future or replaced nodes.

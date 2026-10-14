@@ -179,6 +179,9 @@ cat > "$tmp/fake-bin/install" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'install %s\n' "$*" >> "$KH_TEST_INSTALL_LOG"
+if [[ -n ${KH_TEST_INSTALLED_BIN:-} ]]; then
+  cp "${@: -2:1}" "$KH_TEST_INSTALLED_BIN"
+fi
 EOF
 chmod +x "$tmp/fake-bin/install"
 
@@ -191,7 +194,7 @@ if [[ ${INSTALL_K3S_SKIP_DOWNLOAD:-} == true ]]; then
   [[ ${INSTALL_K3S_BIN_DIR:-} == /usr/local/bin ]]
   [[ ${INSTALL_K3S_SKIP_START:-} == true ]]
   [[ ${INSTALL_K3S_SKIP_SELINUX_RPM:-} == true ]]
-  [[ ${INSTALL_K3S_VERSION:-} == 'v1.36.3+k3s1' ]]
+  [[ ${INSTALL_K3S_VERSION:-} == "${KH_TEST_INSTALL_VERSION:-v1.36.3+k3s1}" ]]
   [[ ${INSTALL_K3S_EXEC:-} == "${KH_TEST_INSTALL_EXEC:-server}" ]]
   [[ -z ${INSTALL_K3S_COMMIT:-} ]]
   [[ -z ${INSTALL_K3S_NAME:-} ]]
@@ -417,6 +420,153 @@ rm -f "$KH_TEST_DOWNLOAD_LOG"
 KH_KUBERNETES_PRELOAD_DIR="$tmp/preload" run_success symlinked-preloaded-installer \
   k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
 grep -Fq 'raw.githubusercontent.com/k3s-io/k3s/' "$KH_TEST_DOWNLOAD_LOG"
+
+# A newer patch release of the pinned minor, preloaded with a manifest that
+# its payload matches, replaces the pinned version without any download.
+# Every other preload leaves the pinned path exactly as above.
+fake_head_amd64="$tmp/head-payload-amd64"
+fake_head_arm64="$tmp/head-payload-arm64"
+printf '%s\n' 'channel head amd64 payload' > "$fake_head_amd64"
+printf '%s\n' 'channel head arm64 payload' > "$fake_head_arm64"
+fake_head_amd64_sha=$(sha256sum "$fake_head_amd64" | awk '{print $1}')
+fake_head_arm64_sha=$(sha256sum "$fake_head_arm64" | awk '{print $1}')
+export KH_TEST_INSTALLED_BIN="$tmp/installed-k3s"
+
+# write_preload <root> <version> <asset> <payload> [manifest lines]
+write_preload() {
+  local dir="$1/k3s/$2"
+  mkdir -p "$dir"
+  cp "$k3s_installer" "$dir/install.sh"
+  cp "$4" "$dir/$3"
+  if [[ $# -ge 5 ]]; then
+    printf '%s' "$5" > "$dir/manifest"
+  else
+    printf 'version=%s\nasset=%s\nsha256=%s\n' "$2" "$3" "$(sha256sum "$4" | awk '{print $1}')" > "$dir/manifest"
+  fi
+}
+
+# run_head_case <name> <root> <expected version> <expected payload sha> <installer args...>
+run_head_case() {
+  name=$1 root=$2 expected_version=$3 expected_sha=$4
+  shift 4
+  rm -f "$KH_TEST_DOWNLOAD_LOG" "$KH_TEST_INSTALLED_BIN"
+  KH_KUBERNETES_PRELOAD_DIR="$root" KH_TEST_INSTALL_VERSION="$expected_version" run_success "$name" "$@"
+  if [[ -e $KH_TEST_DOWNLOAD_LOG ]]; then
+    echo "$name downloaded: $(cat "$KH_TEST_DOWNLOAD_LOG")" >&2
+    exit 1
+  fi
+  [[ $(sha256sum "$KH_TEST_INSTALLED_BIN" | awk '{print $1}') == "$expected_sha" ]] \
+    || { echo "$name installed another payload" >&2; exit 1; }
+  grep -Fq "Using the preloaded k3s payload from $root/k3s/$expected_version/" "$tmp/$name.out"
+}
+
+export KH_TEST_UNAME=x86_64
+export KH_TEST_ARCH=amd64
+
+root="$tmp/preload-head"
+write_preload "$root" 'v1.36.3+k3s1' k3s "$fake_payload_amd64"
+rm -f "$root/k3s/v1.36.3+k3s1/manifest"
+write_preload "$root" 'v1.36.5+k3s1' k3s "$fake_head_amd64"
+run_head_case newer-preload "$root" 'v1.36.5+k3s1' "$fake_head_amd64_sha" \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+grep -Fq 'Installing preloaded k3s v1.36.5+k3s1, newer than v1.36.3+k3s1' "$tmp/newer-preload.out"
+grep -Fq 'Using the preloaded k3s installer' "$tmp/newer-preload.out"
+
+# The pins do not matter for the newer preload: its manifest is the digest.
+run_head_case newer-preload-without-pin "$root" 'v1.36.5+k3s1' "$fake_head_amd64_sha" \
+  k3s 'v1.36.3+k3s1' '' '' c2VydmVy
+
+# A pinned pre-release is older than the release of the same patch.
+run_head_case newer-preload-over-prerelease "$root" 'v1.36.5+k3s1' "$fake_head_amd64_sha" \
+  k3s 'v1.36.5-rc1+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+
+# The newest wins, compared numerically (10 > 9), and k3s revisions count.
+root="$tmp/preload-several"
+write_preload "$root" 'v1.36.4+k3s1' k3s "$fake_payload_amd64"
+write_preload "$root" 'v1.36.9+k3s2' k3s "$fake_payload_amd64"
+write_preload "$root" 'v1.36.10+k3s1' k3s "$fake_head_amd64"
+run_head_case newest-preload "$root" 'v1.36.10+k3s1' "$fake_head_amd64_sha" \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+root="$tmp/preload-revision"
+write_preload "$root" 'v1.36.3+k3s2' k3s "$fake_head_amd64"
+run_head_case newer-k3s-revision "$root" 'v1.36.3+k3s2' "$fake_head_amd64_sha" \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+
+export KH_TEST_UNAME=aarch64
+export KH_TEST_ARCH=arm64
+root="$tmp/preload-arm64"
+write_preload "$root" 'v1.36.5+k3s1' k3s-arm64 "$fake_head_arm64"
+run_head_case newer-preload-arm64 "$root" 'v1.36.5+k3s1' "$fake_head_arm64_sha" \
+  k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+
+export KH_TEST_UNAME=x86_64
+export KH_TEST_ARCH=amd64
+
+# Each case next to the exact preload of the pinned version (written by an
+# older template, without a manifest): the node installs the pinned version
+# from that preload, as before.
+head_sha=$fake_head_amd64_sha
+zero_sha=0000000000000000000000000000000000000000000000000000000000000000
+for spec in \
+  'other-minor|v1.37.0+k3s1|k3s|' \
+  'older-patch|v1.36.2+k3s1|k3s|' \
+  'same-version|v1.36.3+k3s1|k3s|' \
+  'prerelease|v1.36.6-rc1+k3s1|k3s|' \
+  "payload-mismatch|v1.36.5+k3s1|k3s|version=v1.36.5+k3s1;asset=k3s;sha256=$fake_payload_amd64_sha" \
+  "zero-digest|v1.36.5+k3s1|k3s|version=v1.36.5+k3s1;asset=k3s;sha256=$zero_sha" \
+  "uppercase-digest|v1.36.5+k3s1|k3s|version=v1.36.5+k3s1;asset=k3s;sha256=$(tr a-f A-F <<< "$head_sha")" \
+  "other-version|v1.36.5+k3s1|k3s|version=v1.36.6+k3s1;asset=k3s;sha256=$head_sha" \
+  "other-asset|v1.36.5+k3s1|k3s|version=v1.36.5+k3s1;asset=k3s-arm64;sha256=$head_sha" \
+  "duplicate-digest|v1.36.5+k3s1|k3s|version=v1.36.5+k3s1;asset=k3s;sha256=$head_sha;sha256=$head_sha" \
+  'missing-manifest|v1.36.5+k3s1|k3s|-' \
+  'arm64-payload-only|v1.36.5+k3s1|k3s-arm64|' \
+  'symlinked-payload|v1.36.5+k3s1|k3s|' \
+  'symlinked-manifest|v1.36.5+k3s1|k3s|'; do
+  IFS='|' read -r case_name case_version case_asset case_manifest <<< "$spec"
+  root="$tmp/preload-ignored-$case_name"
+  write_preload "$root" 'v1.36.3+k3s1' k3s "$fake_payload_amd64"
+  rm -f "$root/k3s/v1.36.3+k3s1/manifest"
+  case_payload=$fake_head_amd64
+  [[ $case_name != same-version ]] || case_payload=$fake_payload_amd64
+  if [[ -z $case_manifest ]]; then
+    write_preload "$root" "$case_version" "$case_asset" "$case_payload"
+  else
+    write_preload "$root" "$case_version" "$case_asset" "$case_payload" "$(tr ';' '\n' <<< "$case_manifest")"$'\n'
+  fi
+  case_dir="$root/k3s/$case_version"
+  case $case_name in
+    missing-manifest) rm -f "$case_dir/manifest" ;;
+    symlinked-payload) mv "$case_dir/k3s" "$tmp/$case_name-payload" && ln -s "$tmp/$case_name-payload" "$case_dir/k3s" ;;
+    symlinked-manifest) mv "$case_dir/manifest" "$tmp/$case_name-manifest" && ln -s "$tmp/$case_name-manifest" "$case_dir/manifest" ;;
+  esac
+  run_head_case "ignored-$case_name" "$root" 'v1.36.3+k3s1' "$fake_payload_amd64_sha" \
+    k3s 'v1.36.3+k3s1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+  grep -Fq 'No preloaded k3s newer than v1.36.3+k3s1' "$tmp/ignored-$case_name.out" \
+    || { echo "ignored-$case_name: $(cat "$tmp/ignored-$case_name.out")" >&2; exit 1; }
+  case $case_name in
+    other-minor | older-patch | same-version | prerelease) ;;
+    *) grep -Fq "WARNING: ignoring preloaded k3s $case_version: bad manifest or payload" "$tmp/ignored-$case_name.out" ;;
+  esac
+done
+
+# Without a pin and without a newer preload, the exact preload is still not
+# trusted on its manifest alone: the release checksum decides, as before.
+root="$tmp/preload-unpinned-same"
+write_preload "$root" 'v1.36.3+k3s1' k3s "$fake_payload_amd64"
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$root" run_success unpinned-same-version-preload \
+  k3s 'v1.36.3+k3s1' '' '' c2VydmVy
+grep -Fq '/sha256sum-amd64.txt' "$KH_TEST_DOWNLOAD_LOG"
+grep -Fq '/releases/download/v1.36.3%2Bk3s1/k3s' "$KH_TEST_DOWNLOAD_LOG"
+
+# RKE2 never looks at a k3s preload.
+root="$tmp/preload-rke2"
+write_preload "$root" 'v1.32.6+k3s1' k3s "$fake_head_amd64"
+rm -f "$KH_TEST_DOWNLOAD_LOG"
+KH_KUBERNETES_PRELOAD_DIR="$root" run_success rke2-ignores-k3s-preload \
+  rke2 'v1.32.5+rke2r1' "$fake_payload_amd64_sha" "$fake_payload_arm64_sha" c2VydmVy
+grep -Fq '/releases/download/v1.32.5%2Brke2r1/rke2.linux-amd64.tar.gz' "$KH_TEST_DOWNLOAD_LOG"
+unset KH_TEST_INSTALLED_BIN
 
 if rg -n 'get\.k3s\.io|get\.rke2\.io|curl[^\n]*\|[^\n]*(sh|bash)' \
   "$repo_root/locals.tf" "$repo_root/robot-nodes.tf" "$repo_root/output.tf"; then
