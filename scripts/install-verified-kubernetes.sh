@@ -63,8 +63,8 @@ download_release_metadata() {
 
 # A snapshot build may preload the pinned installer and payload of one exact
 # version (packer-template kubernetes_preload_version). They are used only when
-# their digest equals the pin, so a stale or damaged preload falls back to the
-# download and can never be installed.
+# their digest equals the pin (or, for a newer patch release, the digest of its
+# build manifest), so a stale or damaged preload can never be installed.
 preload_root=${KH_KUBERNETES_PRELOAD_DIR:-/var/lib/kube-hetzner/preload}
 
 use_preloaded_file() {
@@ -85,10 +85,16 @@ use_preloaded_file() {
 }
 
 # Prefer the newest preloaded patch release of the same minor that is newer
-# than the pin and matches the manifest its snapshot build wrote.
+# than the pin and matches the manifest its snapshot build wrote, from a tree
+# that only this user can change (the manifest is the digest).
 select_newer_k3s_preload() {
   minor=${version%".${version#v*.*.}"} newer_version='' newer_asset=k3s
   [ "$architecture" = amd64 ] || newer_asset=k3s-arm64
+  if [ -n "$([ ! -e "$preload_root" ] || find "$preload_root" ! -user "$(id -u)" -o ! -type l \
+    \( -perm -020 -o -perm -002 \) 2>&1 || echo failed)" ]; then
+    echo "WARNING: ignoring newer preloaded k3s: others can change $preload_root" >&2
+    return 0
+  fi
   for newer_dir in "$preload_root/k3s/$minor".*; do
     candidate=${newer_dir##*/}
     printf '%s' "$candidate" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$' || continue
@@ -100,9 +106,9 @@ select_newer_k3s_preload() {
       case $b in *-*) ;; *) [ "${a##*k3s}" -gt "${b##*k3s}" ] ;; esac; } || continue
     newer_manifest=$newer_dir/manifest newer_payload=$newer_dir/$newer_asset
     digest=$([ -f "$newer_manifest" ] && [ ! -L "$newer_manifest" ] && awk -F= -v v="$candidate" -v a="$newer_asset" '
-      $1 == "version" { n++; ok += $2 == v } $1 == "asset" { n++; ok += $2 == a } $1 == "sha256" { n++; d = $2 }
-      END { if (n == 3 && ok == 2 && length(d) == 64 && d !~ /[^0-9a-f]/ && d !~ /^0+$/) print d }' "$newer_manifest") || digest=
-    if [ -z "$digest" ] || [ ! -f "$newer_payload" ] || [ -L "$newer_payload" ] ||
+      NF != 2 { bad = 1 } $1 == "version" { V++; bad += $2 != v } $1 == "asset" { A++; bad += $2 != a } $1 == "sha256" { S++; d = $2 }
+      END { if (!bad && NR == 3 && V == 1 && A == 1 && S == 1 && length(d) == 64 && d !~ /[^0-9a-f]/ && d !~ /^0+$/) print d }' "$newer_manifest") || digest=
+    if [ -z "$digest" ] || [ -L "$newer_dir" ] || [ ! -f "$newer_payload" ] || [ -L "$newer_payload" ] ||
       [ "$(sha256sum "$newer_payload" | awk '{print $1}')" != "$digest" ]; then
       echo "WARNING: ignoring preloaded k3s $candidate: bad manifest or payload" >&2
       continue
@@ -299,7 +305,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [ "$distribution" = k3s ]; then
+# Set by Terraform only while the upgrade plans follow the channel.
+if [ "$distribution" = k3s ] && [ "${KH_K3S_NEWER_PRELOAD:-}" = 1 ]; then
   select_newer_k3s_preload
 fi
 preload_dir=$preload_root/$distribution/$version
@@ -321,8 +328,8 @@ case $distribution in
 
     payload=$work_dir/$asset_name
     payload_url="https://github.com/k3s-io/k3s/releases/download/$version_urlsafe/$asset_name"
-    # Only a pinned digest can accept the preload; without a pin the digest
-    # itself has to come from the release's checksum publication.
+    # Only a pinned (or manifest) digest can accept the preload; without one
+    # the digest itself has to come from the release's checksum publication.
     if ! use_preloaded_file "$preload_dir/$asset_name" "$payload" "$expected_payload_sha256" "k3s payload"; then
       if [ -z "$expected_payload_sha256" ]; then
         expected_payload_sha256=$(resolve_release_payload_sha256 k3s "$version_urlsafe" "$architecture" "$asset_name")
