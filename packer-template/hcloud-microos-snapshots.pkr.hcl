@@ -244,7 +244,7 @@ variable "kernel_type" {
 variable "kubernetes_preload_version" {
   type        = string
   default     = ""
-  description = "k3s release tag (for example v1.36.3+k3s1) to preload into the snapshot together with the pinned k3s installer. The module's node installer uses the preloaded files instead of downloading them from GitHub when the node installs exactly this version and both digests match its pins. Empty preloads nothing. Requires selinux_package_to_install = k3s."
+  description = "k3s release tag (for example v1.36.3+k3s1) to preload into the snapshot together with the pinned k3s installer and a manifest of the payload digest verified at build time. The module's node installer uses the preloaded files instead of downloading them from GitHub when the node installs exactly this version and both digests match its pins, or when this version is a newer patch release of the minor the node installs and the payload matches the manifest; the node then joins on this version, so release such a snapshot only once every control plane runs at least this version. Empty preloads nothing. Requires selinux_package_to_install = k3s."
 
   validation {
     condition     = var.kubernetes_preload_version == "" || can(regex("^v[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9.-]+)?[+]k3s[0-9]+$", var.kubernetes_preload_version))
@@ -312,8 +312,9 @@ locals {
   opensuse_microos_arm_image_path  = "/root/openSUSE-MicroOS.aarch64-ContainerHost-OpenStack-Cloud.qcow2"
 
   # Must equal K3S_INSTALLER_COMMIT and K3S_INSTALLER_SHA256 in the module's
-  # scripts/install-verified-kubernetes.sh, which looks for the preload in
-  # kubernetes_preload_dir (scripts/tests/test_kubernetes_preload.sh checks both).
+  # scripts/install-verified-kubernetes.sh, which reads the preload and its
+  # manifest from kubernetes_preload_dir (scripts/tests/test_kubernetes_preload.sh
+  # checks both).
   k3s_installer_commit   = "2d0f82fa2f933cd227fe38e1482558ce4769f464"
   k3s_installer_sha256   = "ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
   kubernetes_preload_dir = "/var/lib/kube-hetzner/preload/k3s/${var.kubernetes_preload_version}"
@@ -594,7 +595,9 @@ EOF
   EOT
 
   # Runs on the live system: /var is a persistent subvolume outside the
-  # transactional root and is part of the snapshot.
+  # transactional root and is part of the snapshot. The manifest is written
+  # last, after both digest checks; the node installer accepts a preload newer
+  # than its own pinned version only through it.
   kubernetes_preload_commands = var.kubernetes_preload_version == "" ? "true" : <<-EOT
     [ '${var.selinux_package_to_install}' = k3s ] \
       || { echo "ERROR: kubernetes_preload_version requires selinux_package_to_install = k3s" >&2; exit 1; }
@@ -624,6 +627,10 @@ EOF
     mv -f "$preload_dir/$preload_asset.part" "$preload_dir/$preload_asset"
     chmod 0644 "$preload_dir/install.sh"
     chmod 0755 "$preload_dir/$preload_asset"
+    printf 'version=%s\nasset=%s\nsha256=%s\n' '${var.kubernetes_preload_version}' "$preload_asset" "$preload_sha256" \
+      > "$preload_dir/manifest.part"
+    chmod 0644 "$preload_dir/manifest.part"
+    mv -f "$preload_dir/manifest.part" "$preload_dir/manifest"
   EOT
 
   finalize_snapshot = <<-EOT
