@@ -1178,27 +1178,34 @@ EOT
 
   verified_kubernetes_installer_b64    = base64encode(file("${path.module}/scripts/install-verified-kubernetes.sh"))
   verified_kubernetes_installer_prefix = "KH_INSTALLER=$(mktemp /tmp/kh-kubernetes-install.XXXXXXXXXX) && trap 'rm -f \"$KH_INSTALLER\"' EXIT && printf '%s' '${local.verified_kubernetes_installer_b64}' | base64 --decode > \"$KH_INSTALLER\" && chmod 0700 \"$KH_INSTALLER\" &&"
+  # A preloaded k3s release newer than the bootstrap version (same minor, see
+  # the installer) may replace it only while the module's upgrade plans follow
+  # the channel; an explicit k3s_version, which the plans pin too, stays exact.
+  k3s_newer_preload_env = "KH_K3S_NEWER_PRELOAD=${var.k3s_version == "" && var.automatically_upgrade_kubernetes && var.enable_system_upgrade_controller ? 1 : 0}"
   k3s_install_server_command = format(
-    "%s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
+    "%s %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
     local.verified_kubernetes_installer_prefix,
+    local.k3s_newer_preload_env,
     local.k3s_initial_version,
     lookup(local.k3s_effective_sha256, "amd64", ""),
     lookup(local.k3s_effective_sha256, "arm64", ""),
     base64encode("server ${var.control_plane_exec_args}"),
   )
   k3s_install_agent_command = format(
-    "%s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
+    "%s %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
     local.verified_kubernetes_installer_prefix,
+    local.k3s_newer_preload_env,
     local.k3s_initial_version,
     lookup(local.k3s_effective_sha256, "amd64", ""),
     lookup(local.k3s_effective_sha256, "arm64", ""),
     base64encode("agent ${var.agent_exec_args}"),
   )
   k3s_install_external_agent_command = format(
-    "K3S_URL=$(printf '%%s' '%s' | base64 --decode) && K3S_TOKEN=$(printf '%%s' '%s' | base64 --decode) && KH_K3S_EXTERNAL_NODE_IP='<PUBLIC_NODE_IP>' && export K3S_URL K3S_TOKEN KH_K3S_EXTERNAL_NODE_IP && %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
+    "K3S_URL=$(printf '%%s' '%s' | base64 --decode) && K3S_TOKEN=$(printf '%%s' '%s' | base64 --decode) && KH_K3S_EXTERNAL_NODE_IP='<PUBLIC_NODE_IP>' && export K3S_URL K3S_TOKEN KH_K3S_EXTERNAL_NODE_IP && %s %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
     base64encode(local.k3s_endpoint),
     base64encode(local.cluster_token),
     local.verified_kubernetes_installer_prefix,
+    local.k3s_newer_preload_env,
     local.k3s_initial_version,
     lookup(local.k3s_effective_sha256, "amd64", ""),
     lookup(local.k3s_effective_sha256, "arm64", ""),

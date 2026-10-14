@@ -244,7 +244,7 @@ variable "kernel_type" {
 variable "kubernetes_preload_version" {
   type        = string
   default     = ""
-  description = "k3s release tag (for example v1.36.3+k3s1) to preload into the snapshot together with the pinned k3s installer and a manifest of the payload digest verified at build time. The module's node installer uses the preloaded files instead of downloading them from GitHub when the node installs exactly this version and both digests match its pins, or when this version is a newer patch release of the minor the node installs and the payload matches the manifest; the node then joins on this version, so release such a snapshot only once every control plane runs at least this version. Empty preloads nothing. Requires selinux_package_to_install = k3s."
+  description = "k3s release tag (for example v1.36.3+k3s1) to preload into the snapshot together with the pinned k3s installer and a manifest of the payload digest verified at build time. The module's node installer uses the preloaded files instead of downloading them from GitHub when the node installs exactly this version and both digests match its pins, or, on a cluster whose upgrade plans follow the k3s channel (no k3s_version), when this version is a newer patch release of the minor the node installs and the payload matches the manifest; the node then joins on this version, so release such a snapshot only once every control plane runs at least this version. Empty preloads nothing. Requires selinux_package_to_install = k3s."
 
   validation {
     condition     = var.kubernetes_preload_version == "" || can(regex("^v[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9.-]+)?[+]k3s[0-9]+$", var.kubernetes_preload_version))
@@ -255,7 +255,7 @@ variable "kubernetes_preload_version" {
 variable "kubernetes_preload_sha256" {
   type        = map(string)
   default     = {}
-  description = "Reviewed SHA-256 of the k3s payload per architecture (amd64, arm64) for kubernetes_preload_version. Use the digests of the module release manifest (k3s_release_sha256_manifest in locals.tf); the build fails when the digest of its architecture is missing or does not match."
+  description = "Reviewed SHA-256 of the k3s payload per architecture (amd64, arm64) for kubernetes_preload_version. Use the digests of the module release manifest (k3s_release_sha256_manifest in locals.tf) or, for a newer patch release of the module's minor, the digests from that release's sha256sum-<arch>.txt; the build records the digest in the preload manifest and fails when the digest of its architecture is missing or does not match."
 
   validation {
     condition = alltrue([
@@ -611,6 +611,9 @@ EOF
     preload_dir='${local.kubernetes_preload_dir}'
     preload_version_urlsafe="$(printf '%s' '${var.kubernetes_preload_version}' | sed 's/+/%2B/g')"
     install -d -m 0755 "$preload_dir"
+    # The node installer takes a newer preload only from a tree that no one
+    # but root can change.
+    chmod go-w "$preload_dir/.." "$preload_dir/../.."
     curl -fsS --proto '=https' --tlsv1.2 --max-redirs 0 --retry 3 \
       --connect-timeout 20 --max-time 300 \
       --output "$preload_dir/install.sh.part" \

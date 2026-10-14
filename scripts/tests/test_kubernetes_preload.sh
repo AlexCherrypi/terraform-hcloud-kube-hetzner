@@ -46,6 +46,7 @@ grep -Fq 'kube-hetzner/kubernetes-preload' "$template" \
 packer_bin=${PACKER_BIN:-packer}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+umask 022
 mkdir "$tmp/bin" "$tmp/preload"
 printf '%s\n' 'preloaded k3s payload' > "$tmp/payload"
 payload_sha256=$(sha256sum "$tmp/payload" | awk '{print $1}')
