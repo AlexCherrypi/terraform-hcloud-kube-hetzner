@@ -50,7 +50,10 @@ resource "hcloud_load_balancer_network" "cluster" {
 }
 
 resource "hcloud_load_balancer_target" "cluster" {
-  count = local.has_external_load_balancer ? 0 : 1
+  # Optional: with ingress_lb_label_selector_target = false only the CCM's own
+  # server targets remain, so its exclude label and node selector decide which
+  # nodes receive traffic.
+  count = local.has_external_load_balancer || !var.ingress_lb_label_selector_target ? 0 : 1
 
   depends_on       = [hcloud_load_balancer_network.cluster]
   type             = "label_selector"

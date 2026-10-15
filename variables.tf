@@ -882,6 +882,12 @@ variable "enable_load_balancer_monitoring" {
   default     = false
 }
 
+variable "ingress_lb_label_selector_target" {
+  description = "Attach the label_selector target (all nodes of the cluster, control planes included when they allow scheduling) to the module-managed ingress load balancer. The hcloud CCM adds its own server targets to the same load balancer through the ingress Service, and only those honour node.kubernetes.io/exclude-from-external-load-balancers and the CCM node-selector annotation. Hetzner resolves the label_selector target on its own, so a node the CCM took out (for example one that kured is draining for a reboot) stays in rotation through it. Set this to false to leave target management to the CCM alone; the load balancer then has no targets unless the CCM manages the ingress Service. Has no effect when there is no module-managed ingress load balancer."
+  type        = bool
+  default     = true
+}
+
 variable "exclude_agents_from_external_load_balancers" {
   description = "Add node.kubernetes.io/exclude-from-external-load-balancers=true label to agent nodes. Enable this if you use both the Terraform-managed ingress LB and CCM-managed LoadBalancer services, and want to prevent double-registration of agents to the CCM LBs. Note: This excludes agents from ALL CCM-managed LoadBalancer services, not just ingress."
   type        = bool
