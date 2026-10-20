@@ -4098,6 +4098,7 @@ cloudinit_write_files_common_node_config = <<EOT
 - content: ${base64gzip(local.registries_config_effective)}
   encoding: gzip+base64
   path: ${local.registries_config_file}
+  permissions: "0600"
 %{endif}
 
 # Create the distribution-specific kubelet config file if needed.
