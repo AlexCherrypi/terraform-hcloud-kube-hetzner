@@ -4,7 +4,7 @@ kube-hetzner treats initial K3s and RKE2 bootstrap as a root code-execution boun
 
 ## Trust model
 
-The module embeds `scripts/install-verified-kubernetes.sh` into each HCloud, autoscaler, Robot, and generated external-node install command. That launcher:
+The module embeds `scripts/install-verified-kubernetes.sh` into each HCloud, Robot, and generated external-node install command. Autoscaled K3s nodes receive the same file as its own cloud-init `write_files` entry (`/var/pre_install/install-verified-kubernetes.sh`, mode `0700`, gzip-compressed to save Hetzner `user_data` space), which their install command runs and leaves in place for digest checks. That launcher:
 
 1. downloads the official installer from an immutable upstream Git commit;
 2. verifies the installer against a SHA-256 pinned in the launcher;

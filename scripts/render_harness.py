@@ -540,6 +540,7 @@ def assert_autoscaler_user_data_limit_contract() -> None:
     required_template_compression = (
         "base64gzip(k3s_config)",
         "base64gzip(install_k8s_agent_script)",
+        "base64gzip(verified_installer_script)",
     )
     missing_template = [
         fragment for fragment in required_template_compression if fragment not in template_source
@@ -1240,6 +1241,8 @@ def base_render_vars() -> dict[str, Any]:
         "ssh_port": 22,
         "swap_size": "",
         "tailscale_bootstrap_script": "",
+        "verified_installer_path": "",
+        "verified_installer_script": "",
         "vip": "10.0.0.1",
         "vip_auth_pass": "renderpass",
         "zram_size": "",

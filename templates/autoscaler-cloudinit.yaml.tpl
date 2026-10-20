@@ -80,6 +80,14 @@ ${cloudinit_write_files_common}
 - content: ${base64gzip(install_k8s_agent_script)}
   encoding: gzip+base64
   path: /var/pre_install/install-k8s-agent.sh
+%{ if verified_installer_script != "" ~}
+
+# Verified Kubernetes installer called by install-k8s-agent.sh.
+- content: ${base64gzip(verified_installer_script)}
+  encoding: gzip+base64
+  path: ${verified_installer_path}
+  permissions: "0700"
+%{ endif ~}
 
 # Apply DNS config
 %{ if has_dns_servers ~}

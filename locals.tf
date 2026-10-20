@@ -1191,14 +1191,32 @@ EOT
     lookup(local.k3s_effective_sha256, "arm64", ""),
     base64encode("server ${var.control_plane_exec_args}"),
   )
-  k3s_install_agent_command = format(
-    "%s %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
-    local.verified_kubernetes_installer_prefix,
-    local.k3s_newer_preload_env,
+  k3s_install_agent_args = format(
+    "k3s '%s' '%s' '%s' '%s'",
     local.k3s_initial_version,
     lookup(local.k3s_effective_sha256, "amd64", ""),
     lookup(local.k3s_effective_sha256, "arm64", ""),
     base64encode("agent ${var.agent_exec_args}"),
+  )
+  k3s_install_agent_command = format(
+    "%s %s \"$KH_INSTALLER\" %s",
+    local.verified_kubernetes_installer_prefix,
+    local.k3s_newer_preload_env,
+    local.k3s_install_agent_args,
+  )
+  # Autoscaled k3s agents get the installer as its own gzip+base64 cloud-init
+  # write_files entry instead of plain base64 inside the gzip'ed
+  # install-k8s-agent.sh: gzip cannot shrink base64, and the inline copy was
+  # the largest part of the 32 KiB Hetzner user_data budget. The file stays on
+  # the node so its digest can be checked after bootstrap. Static agents,
+  # control planes, Robot nodes, RKE2 and the external join helper keep the
+  # inline installer.
+  autoscaler_verified_kubernetes_installer_path = "/var/pre_install/install-verified-kubernetes.sh"
+  autoscaler_k3s_install_agent_command = format(
+    "KH_INSTALLER=%s && %s /bin/sh \"$KH_INSTALLER\" %s",
+    local.autoscaler_verified_kubernetes_installer_path,
+    local.k3s_newer_preload_env,
+    local.k3s_install_agent_args,
   )
   k3s_install_external_agent_command = format(
     "K3S_URL=$(printf '%%s' '%s' | base64 --decode) && K3S_TOKEN=$(printf '%%s' '%s' | base64 --decode) && KH_K3S_EXTERNAL_NODE_IP='<PUBLIC_NODE_IP>' && export K3S_URL K3S_TOKEN KH_K3S_EXTERNAL_NODE_IP && %s %s \"$KH_INSTALLER\" k3s '%s' '%s' '%s' '%s'",
@@ -1259,6 +1277,15 @@ EOT
     var.enable_selinux ? local.apply_rke2_selinux : [],
     local.common_post_install_k8s_commands
   )
+
+  # The autoscaler variant differs from install_k3s_agent only in the installer
+  # call; the installer itself is written by the autoscaler cloud-init.
+  autoscaler_install_k3s_agent = [
+    for command in local.install_k3s_agent :
+    command == local.k3s_install_agent_command ? local.autoscaler_k3s_install_agent_command : command
+  ]
+  autoscaler_install_k8s_agent             = var.kubernetes_distribution == "rke2" ? local.install_rke2_agent : local.autoscaler_install_k3s_agent
+  autoscaler_verified_kubernetes_installer = var.kubernetes_distribution == "rke2" ? "" : file("${path.module}/scripts/install-verified-kubernetes.sh")
 
   install_k8s_server = var.kubernetes_distribution == "rke2" ? local.install_rke2_server : local.install_k3s_server
   install_k8s_agent  = var.kubernetes_distribution == "rke2" ? local.install_rke2_agent : local.install_k3s_agent

@@ -232,9 +232,11 @@ data "cloudinit_config" "autoscaler_config" {
           : {}
         ))
         install_k8s_agent_script = join("\n", concat(
-          local.install_k8s_agent,
+          local.autoscaler_install_k8s_agent,
           local.kubernetes_distribution == "rke2" ? ["systemctl start rke2-agent", "systemctl enable rke2-agent"] : ["systemctl start k3s-agent"]
         ))
+        verified_installer_path   = local.autoscaler_verified_kubernetes_installer_path
+        verified_installer_script = local.autoscaler_verified_kubernetes_installer
         # The Leap Micro-only SELinux policy is left out on other operating systems.
         cloudinit_write_files_common = join("", [
           local.cloudinit_write_files_common_base,
@@ -299,6 +301,8 @@ data "cloudinit_config" "autoscaler_config_rke2" {
           : {}
         ))
         install_k8s_agent_script            = join("\n", concat(local.install_k8s_agent, ["systemctl start rke2-agent", "systemctl enable rke2-agent"]))
+        verified_installer_path             = ""
+        verified_installer_script           = ""
         cloudinit_write_files_common        = join("", [local.cloudinit_write_files_common, local.autoscaler_node_annotation_write_files_yaml[count.index]])
         cloudinit_runcmd_common             = join("", [local.cloudinit_runcmd_common, local.autoscaler_node_annotation_runcmd_yaml[count.index]])
         metadata_route_repair_script        = local.metadata_route_repair_script
