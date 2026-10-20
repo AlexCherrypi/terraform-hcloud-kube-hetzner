@@ -3488,13 +3488,29 @@ else
   echo "Updated registries.yaml detected, restart of k3s service required"
   install -m 0600 /tmp/registries.yaml /etc/rancher/k3s/registries.yaml
   if systemctl is-active --quiet k3s; then
-    systemctl restart k3s || (echo "Error: Failed to restart k3s. Restoring /etc/rancher/k3s/registries.yaml from backup" && install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml && systemctl restart k3s)
+    SERVICE=k3s
   elif systemctl is-active --quiet k3s-agent; then
-    systemctl restart k3s-agent || (echo "Error: Failed to restart k3s-agent. Restoring /etc/rancher/k3s/registries.yaml from backup" && install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml && systemctl restart k3s-agent)
+    SERVICE=k3s-agent
   else
+    SERVICE=""
     echo "No active k3s or k3s-agent service found"
   fi
-  echo "k3s service or k3s-agent service restarted successfully"
+  # The k3s units start with TimeoutStartSec=0. Bound the restart, so a
+  # k3s that never becomes ready fails this step after the previous file
+  # is restored, instead of hanging the apply forever.
+  if [ -n "$SERVICE" ]; then
+    if ! timeout 900 systemctl restart "$SERVICE"; then
+      echo "Error: Failed to restart $SERVICE. Restoring /etc/rancher/k3s/registries.yaml from backup"
+      if [ -f /etc/rancher/k3s/registries.yaml.bak ]; then
+        install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml
+      else
+        rm -f /etc/rancher/k3s/registries.yaml
+      fi
+      timeout 900 systemctl restart "$SERVICE" || echo "Error: Failed to restart $SERVICE with the previous registries.yaml"
+      exit 1
+    fi
+    echo "$SERVICE service restarted successfully"
+  fi
 fi
 EOF
 
@@ -3772,13 +3788,29 @@ else
   echo "Updated registries.yaml detected, restart of rke2 service required"
   install -m 0600 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
   if systemctl is-active --quiet rke2-server; then
-    systemctl restart rke2-server || (echo "Error: Failed to restart rke2-server. Restoring /etc/rancher/rke2/registries.yaml from backup" && install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml && systemctl restart rke2-server)
+    SERVICE=rke2-server
   elif systemctl is-active --quiet rke2-agent; then
-    systemctl restart rke2-agent || (echo "Error: Failed to restart rke2-agent. Restoring /etc/rancher/rke2/registries.yaml from backup" && install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml && systemctl restart rke2-agent)
+    SERVICE=rke2-agent
   else
+    SERVICE=""
     echo "No active rke2-server or rke2-agent service found"
   fi
-  echo "rke2-server service or rke2-agent service restarted successfully"
+  # The rke2 units start with TimeoutStartSec=0. Bound the restart, so a
+  # rke2 that never becomes ready fails this step after the previous file
+  # is restored, instead of hanging the apply forever.
+  if [ -n "$SERVICE" ]; then
+    if ! timeout 900 systemctl restart "$SERVICE"; then
+      echo "Error: Failed to restart $SERVICE. Restoring /etc/rancher/rke2/registries.yaml from backup"
+      if [ -f /etc/rancher/rke2/registries.yaml.bak ]; then
+        install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml
+      else
+        rm -f /etc/rancher/rke2/registries.yaml
+      fi
+      timeout 900 systemctl restart "$SERVICE" || echo "Error: Failed to restart $SERVICE with the previous registries.yaml"
+      exit 1
+    fi
+    echo "$SERVICE service restarted successfully"
+  fi
 fi
 EOF
 
