@@ -3502,7 +3502,7 @@ else
     if ! timeout 900 systemctl restart "$SERVICE"; then
       echo "Error: Failed to restart $SERVICE. Restoring /etc/rancher/k3s/registries.yaml from backup"
       if [ -f /etc/rancher/k3s/registries.yaml.bak ]; then
-        install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml
+        mv -f /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml
       else
         rm -f /etc/rancher/k3s/registries.yaml
       fi
@@ -3511,6 +3511,9 @@ else
     fi
     echo "$SERVICE service restarted successfully"
   fi
+  # Only a failed restart reads the backup. Drop it, so replaced
+  # credentials do not stay on the node.
+  rm -f /etc/rancher/k3s/registries.yaml.bak
 fi
 EOF
 
@@ -3802,7 +3805,7 @@ else
     if ! timeout 900 systemctl restart "$SERVICE"; then
       echo "Error: Failed to restart $SERVICE. Restoring /etc/rancher/rke2/registries.yaml from backup"
       if [ -f /etc/rancher/rke2/registries.yaml.bak ]; then
-        install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml
+        mv -f /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml
       else
         rm -f /etc/rancher/rke2/registries.yaml
       fi
@@ -3811,6 +3814,9 @@ else
     fi
     echo "$SERVICE service restarted successfully"
   fi
+  # Only a failed restart reads the backup. Drop it, so replaced
+  # credentials do not stay on the node.
+  rm -f /etc/rancher/rke2/registries.yaml.bak
 fi
 EOF
 
