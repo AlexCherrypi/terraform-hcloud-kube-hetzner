@@ -3859,7 +3859,7 @@ k8s_kubelet_config_update_script        = local.kubernetes_distribution == "k3s"
 k8s_config_update_script                = local.kubernetes_distribution == "k3s" ? local.k3s_config_update_script : local.rke2_config_update_script
 k8s_authentication_config_update_script = local.kubernetes_distribution == "k3s" ? local.k3s_authentication_config_update_script : local.rke2_authentication_config_update_script
 
-cloudinit_write_files_common = <<EOT
+cloudinit_write_files_common_base = <<EOT
 - path: /usr/local/sbin/kube-hetzner-reconcile-authorized-keys
   content: ${base64gzip(file("${path.module}/scripts/reconcile-authorized-keys.sh"))}
   encoding: gzip+base64
@@ -4051,11 +4051,20 @@ cloudinit_write_files_common = <<EOT
 - path: /root/kube_hetzner_selinux.te
   encoding: gzip+base64
   content: ${base64gzip(file("${path.module}/templates/kube-hetzner-selinux.te"))}
+EOT
+
+# Only the Leap Micro SELinux service reads this policy. Autoscaler pools on
+# other operating systems leave the entry out (autoscaler-agents.tf) to save
+# Hetzner user_data space; host nodes keep the full common list.
+cloudinit_write_files_k8s_custom_policies = <<EOT
 
 # Shared Leap Micro policy used by host and autoscaler templates
 - path: /root/k8s_custom_policies.te
   encoding: gzip+base64
   content: ${base64gzip(file("${path.module}/templates/k8s-custom-policies.te"))}
+EOT
+
+cloudinit_write_files_common_node_config = <<EOT
 
 # Create the distribution-specific registries file before Kubernetes starts.
 %{if local.registries_config_effective != ""}
@@ -4071,6 +4080,12 @@ cloudinit_write_files_common = <<EOT
   path: ${local.kubelet_config_file}
 %{endif}
 EOT
+
+cloudinit_write_files_common = join("", [
+  local.cloudinit_write_files_common_base,
+  local.cloudinit_write_files_k8s_custom_policies,
+  local.cloudinit_write_files_common_node_config,
+])
 
 cloudinit_runcmd_common = <<EOT
 # Replace stale options on module-managed SSH identities before Terraform's
