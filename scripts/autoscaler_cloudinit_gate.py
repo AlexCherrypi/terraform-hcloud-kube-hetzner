@@ -8,11 +8,12 @@ server user_data (32 KiB limit). Rendering is real: `tofu test` (or
 ssh, kubernetes and helm providers, dummy inputs and the real cloudinit
 provider, so the cloudInit comes from the module's own
 `data.cloudinit_config` blocks and `autoscaler.yaml` template. All autoscaler
-pools must share one OS, so each revision is rendered once with MicroOS and
-once with Leap Micro pools. Nothing talks to Hetzner and no credential is
-needed; init needs the module's providers plus hashicorp/external (use
---plugin-dir for an offline init). --cli terraform adds override_during =
-plan to the mocks (Terraform >= 1.11).
+pools must share one OS, so each revision is rendered three times: k3s with
+MicroOS pools, k3s with Leap Micro pools, and RKE2 with MicroOS pools (the
+RKE2 inputs do not depend on the OS). Nothing talks to Hetzner and no
+credential is needed; init needs the module's providers plus
+hashicorp/external (use --plugin-dir for an offline init). --cli terraform
+adds override_during = plan to the mocks (Terraform >= 1.11).
 
 The checks describe one change: the verified Kubernetes installer leaves
 install-k8s-agent.sh for its own gzip+base64 write_files entry, and
@@ -21,23 +22,29 @@ k3s pool the gate is GREEN only if
 
   * write_files differ in exactly these two entries, every other entry and
     every other cloud-config key are byte-identical,
-  * the new installer entry is gzip+base64, mode 0700, and decodes to the
-    bytes of scripts/install-verified-kubernetes.sh,
-  * install-k8s-agent.sh differs in the installer line only: same
-    environment and arguments, `/bin/sh "$KH_INSTALLER"` on the written path,
-    no cleanup trap,
+  * the new installer entry has only path, content, encoding (gzip+base64)
+    and permissions (0700), and decodes to the bytes of
+    scripts/install-verified-kubernetes.sh,
+  * install-k8s-agent.sh keeps its metadata and differs in the installer
+    line only: same environment and arguments, `/bin/sh "$KH_INSTALLER"` on
+    the written path, no cleanup trap,
   * cloudInit shrinks by --delta-min..--delta-max bytes and stays at or
     below --max-len (Leap Micro pools keep the policy, so they only need to
     stay within the 32 KiB limit),
-  * the autoscaler manifest and config.json change nowhere else, the RKE2
-    autoscaler renders are byte-identical, and the install commands of
-    control planes, static agents, Robot nodes and the external join helper
-    are unchanged.
+  * the autoscaler manifest and config.json change nowhere else, and the
+    install commands of control planes, static agents, Robot nodes and the
+    external join helper are unchanged.
+
+For RKE2 the whole autoscaler manifest must be byte-identical, its pools must
+start rke2-agent, and the same install commands must be unchanged.
 
 Counter-tests run after the comparison and must all turn the gate RED: a real
 render of the head with the installer entry removed from the template, plus
-in-memory edits (entry removed, policy kept, path mismatch, installer bytes
-changed, another entry changed), each caught by its own finding.
+in-memory edits on the MicroOS and the Leap Micro render (installer entry
+removed, extra installer key, path mismatch, installer bytes changed,
+install-k8s-agent.sh metadata changed, another entry changed, policy kept on
+MicroOS, policy lost on Leap Micro) and on the RKE2 render (one pool
+changed, a pool that starts k3s-agent), each caught by its own finding.
 
 --registries-config and --extra-write-file only measure: they render the head
 again with a registries.yaml (and an extra write_files entry injected into a
@@ -83,6 +90,7 @@ TEMPLATE = "templates/autoscaler-cloudinit.yaml.tpl"
 TE = "/root/k8s_custom_policies.te"
 AGENT = "/var/pre_install/install-k8s-agent.sh"
 USER_DATA_LIMIT = 32768
+INSTALLER_KEYS = ["content", "encoding", "path", "permissions"]
 CA_ADDRESS_SUFFIX = "terraform_data.configure_autoscaler[0]"
 
 OLD_INSTALLER_LINE = re.compile(
@@ -101,7 +109,7 @@ INSTALLER_BLOCK = re.compile(
 # Dummy inputs shaped like a production cluster: NAT router, control plane
 # load balancer, three control planes, an amd64 and an arm64 autoscaler pool
 # (one with a taint and kubelet args). All autoscaler pools must share one OS,
-# so every tree is rendered twice: MicroOS and Leap Micro.
+# so every tree is rendered per variant (see VARIANTS).
 DUMMY_VARIABLES = """
     hcloud_token    = "kube-hetzner-cloudinit-gate-dummy-hcloud-token-0000000000000000"
     cluster_token   = "kube-hetzner-cloudinit-gate-dummy-cluster-token"
@@ -144,7 +152,14 @@ AUTOSCALER_NODEPOOLS = """
         kubelet_args = ["kube-reserved=cpu=50m,memory=300Mi,ephemeral-storage=1Gi", "system-reserved=cpu=250m,memory=300Mi"] },
     ]
 """
-VARIANTS = ("microos", "leapmicro")
+# Render variant -> (autoscaler pool OS, extra variables). The dump file of a
+# run is named after its variant (DUMP_TF).
+VARIANTS = {
+    "microos": ("microos", ""),
+    "leapmicro": ("leapmicro", ""),
+    "rke2": ("microos", '    kubernetes_distribution = "rke2"\n'),
+}
+K3S_VARIANTS = ("microos", "leapmicro")
 
 HCLOUD_RESOURCES = (
     "firewall", "floating_ip", "floating_ip_assignment", "load_balancer", "load_balancer_service",
@@ -162,12 +177,15 @@ MOCK_KUBECONFIG = (
 # Written into scratch copies only. A plan never writes files, so an external
 # data source (read at plan time) hands the rendered values to this script.
 DUMP_TF = """# Written by scripts/autoscaler_cloudinit_gate.py into a scratch copy only.
+locals {
+  zz_cloudinit_gate_variant = local.kubernetes_distribution == "rke2" ? "rke2" : local.first_nodepool_os
+}
+
 data "external" "zz_cloudinit_gate" {
-  program = ["sh", "-c", "cat > \\"$0\\" && printf '{}'", "${path.root}/zz_cloudinit_gate_${local.first_nodepool_os}.json"]
+  program = ["sh", "-c", "cat > \\"$0\\" && printf '{}'", "${path.root}/zz_cloudinit_gate_${local.zz_cloudinit_gate_variant}.json"]
   query = {
     rendered = jsonencode({
       autoscaler_yaml = local.autoscaler_yaml
-      rke2_cloudinit  = [for config in data.cloudinit_config.autoscaler_config_rke2 : config.rendered]
       pools = [
         for index, pool in var.autoscaler_nodepools :
         { name = "${local.nodeConfigName}${pool.name}", os = local.autoscaler_nodepools_os[index] }
@@ -234,17 +252,17 @@ def test_file(cli: str, variants, registries_config: str | None) -> str:
     registries = ""
     if registries_config is not None:
         registries = f"    registries_config = {json.dumps(registries_config)}\n"
-    runs = "".join(
-        f"""
+    runs = ""
+    for variant in variants:
+        pool_os, extra = VARIANTS[variant]
+        runs += f"""
 run "render_{variant}" {{
   command = plan
 
   variables {{
-{DUMMY_VARIABLES}{AUTOSCALER_NODEPOOLS.replace('"OS"', json.dumps(variant))}{registries}  }}
+{DUMMY_VARIABLES}{AUTOSCALER_NODEPOOLS.replace('"OS"', json.dumps(pool_os))}{extra}{registries}  }}
 }}
 """
-        for variant in variants
-    )
     return f"""# Written by scripts/autoscaler_cloudinit_gate.py; dummy values only.
 mock_provider "hcloud" {{
 {during}{hcloud}  mock_resource "hcloud_load_balancer_network" {{
@@ -276,9 +294,9 @@ mock_provider "helm" {{
 
 
 def render(
-    tree: Path, args: argparse.Namespace, registries_config: str | None = None, variants=VARIANTS
+    tree: Path, args: argparse.Namespace, registries_config: str | None = None, variants=tuple(VARIANTS)
 ) -> dict[str, dict[str, Any]]:
-    """Render one module tree; return the dumped values per OS variant."""
+    """Render one module tree; return the dumped values per variant."""
 
     (tree / "zz_cloudinit_gate.tf").write_text(DUMP_TF, encoding="utf-8")
     test_dir = tree / "zz_cloudinit_gate"
@@ -385,17 +403,21 @@ def check_pool(
     installer_path = added[0] if len(added) == 1 else None
     if installer_path is not None:
         entry = files_after[installer_path]
+        if sorted(entry) != INSTALLER_KEYS:
+            red.append(f"installer entry keys {sorted(entry)}, want {INSTALLER_KEYS}")
         if entry.get("encoding") != "gzip+base64" or str(entry.get("permissions")) != "0700":
             red.append(f"installer entry encoding/permissions {entry.get('encoding')}/{entry.get('permissions')}")
         if sha256(entry_bytes(entry)) != installer_sha:
             red.append("installer entry bytes != scripts/install-verified-kubernetes.sh")
 
     for path in sorted(set(files_before) & set(files_after)):
-        if path == AGENT:
-            continue
         meta_before = {k: v for k, v in files_before[path].items() if k != "content"}
         meta_after = {k: v for k, v in files_after[path].items() if k != "content"}
-        if meta_before != meta_after or entry_bytes(files_before[path]) != entry_bytes(files_after[path]):
+        if path == AGENT:
+            # Its content is compared line by line below.
+            if meta_before != meta_after:
+                red.append("install-k8s-agent.sh entry metadata changed")
+        elif meta_before != meta_after or entry_bytes(files_before[path]) != entry_bytes(files_after[path]):
             red.append(f"write_files entry changed: {path}")
     other_before = {k: v for k, v in before.items() if k != "write_files"}
     other_after = {k: v for k, v in after.items() if k != "write_files"}
@@ -474,12 +496,32 @@ def compare(
                 f"{name}: length {len(ci_before)} -> {len(ci_after)} "
                 f"(want <= {args.max_len}, shrink {args.delta_min}..{args.delta_max})"
             )
-    if "rke2_cloudinit" in before and before["rke2_cloudinit"] != after["rke2_cloudinit"]:
-        red.append("RKE2 autoscaler cloud-init changed")
-    for key, value in sorted(before.get("unchanged", {}).items()):
-        if after.get("unchanged", {}).get(key) != value:
-            red.append(f"local.{key} changed")
-    return red, lengths
+    return red + unchanged_locals(before, after), lengths
+
+
+def unchanged_locals(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    return [
+        f"local.{key} changed"
+        for key, value in sorted(before.get("unchanged", {}).items())
+        if after.get("unchanged", {}).get(key) != value
+    ]
+
+
+def compare_rke2(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """RKE2 keeps the inline installer and the policy: nothing may change."""
+
+    red: list[str] = []
+    configs = config_jsons(after["autoscaler_yaml"])
+    if len(configs) != 1 or not configs[0]["nodeConfigs"]:
+        return ["no RKE2 autoscaler pool rendered"]
+    for name, config in sorted(configs[0]["nodeConfigs"].items()):
+        document = yaml.safe_load(cloud_config_text(config["cloudInit"]))
+        agent = next((e for e in document.get("write_files", []) if e["path"] == AGENT), None)
+        if agent is None or "systemctl start rke2-agent" not in entry_bytes(agent).decode():
+            red.append(f"{name}: RKE2 render does not start rke2-agent")
+    if before["autoscaler_yaml"] != after["autoscaler_yaml"]:
+        red.append("RKE2 autoscaler manifest changed")
+    return red + unchanged_locals(before, after)
 
 
 def report(label: str, red: list[str], lengths: list[tuple[str, int, int]]) -> None:
@@ -508,26 +550,32 @@ def edit_pool(rendered: dict[str, Any], pool: str, edit) -> dict[str, Any]:
     return result
 
 
+def counter_test(label: str, red: list[str], finding: str) -> bool:
+    caught = any(finding in item for item in red)
+    print(f"  counter-test {label}: {'RED (expected)' if caught else 'not caught (gate is blind)'}")
+    return caught
+
+
 def in_memory_counter_tests(
-    before: dict[str, Any], after: dict[str, Any], installer_sha: str, base_installer_sha: str,
+    variant: str, before: dict[str, Any], after: dict[str, Any], installer_sha: str, base_installer_sha: str,
     args: argparse.Namespace,
 ) -> list[str]:
     """Return the names of counter-tests that did NOT turn the gate RED."""
 
-    leap = {pool["name"] for pool in after.get("pools", []) if pool["os"] == "leapmicro"}
-    pool = next(name for name in sorted(config_jsons(after["autoscaler_yaml"])[0]["nodeConfigs"]) if name not in leap)
-    te_entry = next(e for e in yaml.safe_load(cloud_config_text(
-        config_jsons(before["autoscaler_yaml"])[0]["nodeConfigs"][pool]["cloudInit"]))["write_files"] if e["path"] == TE)
+    pool = sorted(config_jsons(after["autoscaler_yaml"])[0]["nodeConfigs"])[0]
 
     def installer(document):
         return next(e for e in document["write_files"] if str(e.get("permissions")) == "0700"
                     and e["path"].startswith("/var/pre_install/") and e["path"] != AGENT)
 
+    def agent(document):
+        return next(e for e in document["write_files"] if e["path"] == AGENT)
+
     def remove_installer(document):
         document["write_files"].remove(installer(document))
 
-    def keep_policy(document):
-        document["write_files"].append(copy.deepcopy(te_entry))
+    def installer_owner(document):
+        installer(document)["owner"] = "root:root"
 
     def move_installer(document):
         installer(document)["path"] = "/var/pre_install/install-verified-kubernetes-moved.sh"
@@ -536,24 +584,54 @@ def in_memory_counter_tests(
         entry = installer(document)
         entry["content"] = base64.b64encode(gzip.compress(entry_bytes(entry) + b"\n# changed\n", mtime=0)).decode()
 
+    def agent_permissions(document):
+        agent(document)["permissions"] = "0755"
+
     def change_other(document):
         document["write_files"][0]["permissions"] = "0644"
 
+    def keep_policy(document):
+        base_document = yaml.safe_load(cloud_config_text(
+            config_jsons(before["autoscaler_yaml"])[0]["nodeConfigs"][pool]["cloudInit"]))
+        document["write_files"].append(next(e for e in base_document["write_files"] if e["path"] == TE))
+
+    def drop_policy(document):
+        document["write_files"] = [e for e in document["write_files"] if e["path"] != TE]
+
+    def start_k3s(document):
+        entry = agent(document)
+        script = entry_bytes(entry).replace(b"systemctl start rke2-agent", b"systemctl start k3s-agent")
+        entry["content"] = base64.b64encode(gzip.compress(script, mtime=0)).decode()
+
     # Each edit must be caught by its own structural finding, not only by the
     # length window (the re-encoded cloudInit has a different length anyway).
+    if variant == "rke2":
+        cases = [
+            ("one pool changed", change_other, "RKE2 autoscaler manifest changed"),
+            ("pool starts k3s-agent", start_k3s, "RKE2 render does not start rke2-agent"),
+        ]
+    else:
+        cases = [
+            ("installer entry removed", remove_installer, "added write_files"),
+            ("installer entry gets an owner", installer_owner, "installer entry keys"),
+            ("installer path mismatch", move_installer, "KH_INSTALLER path"),
+            ("installer bytes changed", change_installer, "installer entry bytes"),
+            ("install-k8s-agent.sh metadata changed", agent_permissions, "install-k8s-agent.sh entry metadata"),
+            ("other entry changed", change_other, "write_files entry changed"),
+        ]
+        if variant == "leapmicro":
+            cases.append(("policy lost on Leap Micro", drop_policy, "Leap Micro pool lost"))
+        else:
+            cases.append(("policy kept on MicroOS", keep_policy, "removed write_files"))
     failed = []
-    for label, edit, finding in (
-        ("installer entry removed", remove_installer, "added write_files"),
-        ("policy kept on MicroOS", keep_policy, "removed write_files"),
-        ("installer path mismatch", move_installer, "KH_INSTALLER path"),
-        ("installer bytes changed", change_installer, "installer entry bytes"),
-        ("other entry changed", change_other, "write_files entry changed"),
-    ):
-        red, _ = compare(before, edit_pool(after, pool, edit), installer_sha, base_installer_sha, args)
-        caught = any(finding in item for item in red)
-        print(f"  counter-test {label}: {'RED (expected)' if caught else 'not caught (gate is blind)'}")
-        if not caught:
-            failed.append(label)
+    for label, edit, finding in cases:
+        edited = edit_pool(after, pool, edit)
+        if variant == "rke2":
+            red = compare_rke2(before, edited)
+        else:
+            red, _ = compare(before, edited, installer_sha, base_installer_sha, args)
+        if not counter_test(f"{variant}: {label}", red, finding):
+            failed.append(f"{variant}: {label}")
     return failed
 
 
@@ -669,20 +747,27 @@ def main() -> int:
         base_installer_sha = sha256((base_tree / INSTALLER_SOURCE).read_bytes())
         print(f"rendering base {args.base} and head {args.head} ({args.cli} test, mocked cloud providers)")
         base, head = render(base_tree, args), render(head_tree, args)
-        for variant in VARIANTS:
+        for variant in K3S_VARIANTS:
             compare_red, lengths = compare(base[variant], head[variant], installer_sha, base_installer_sha, args)
-            if variant == "microos" and not lengths:
-                compare_red.append("no MicroOS pool rendered")
-            print(f"head vs base, {variant} pools:")
+            if not lengths:
+                compare_red.append(f"no {variant} pool rendered")
+            print(f"head vs base, k3s {variant} pools:")
             report("pool", compare_red, lengths)
             red += [f"{variant}: {finding}" for finding in compare_red]
+        rke2_red = compare_rke2(base["rke2"], head["rke2"])
+        same = base["rke2"]["autoscaler_yaml"] == head["rke2"]["autoscaler_yaml"]
+        print(f"head vs base, rke2 microos pools: manifest {'byte-identical' if same else 'changed'}")
+        report("pool", rke2_red, [])
+        red += [f"rke2: {finding}" for finding in rke2_red]
 
         if red:
             print("counter-tests skipped: the head is already RED")
         else:
             print("counter-tests (each must be RED):")
-            blind = in_memory_counter_tests(base["microos"], head["microos"], installer_sha, base_installer_sha, args)
-            red += [f"counter-test stayed GREEN: {label}" for label in blind]
+            for variant in VARIANTS:
+                blind = in_memory_counter_tests(
+                    variant, base[variant], head[variant], installer_sha, base_installer_sha, args)
+                red += [f"counter-test stayed GREEN: {label}" for label in blind]
         if not red and not args.no_counter_test:
             broken_tree = scratch / "broken"
             shutil.copytree(head_tree, broken_tree, ignore=COPY_IGNORE, symlinks=True)
@@ -694,11 +779,9 @@ def main() -> int:
                 template.write_text(text, encoding="utf-8")
                 broken = render(broken_tree, args, variants=("microos",))["microos"]
                 broken_red, _ = compare(base["microos"], broken, installer_sha, base_installer_sha, args)
-                caught = any("added write_files" in item for item in broken_red)
-                print(f"  counter-test real render without installer entry: "
-                      f"{'RED (expected)' if caught else 'not caught (gate is blind)'}")
-                if not caught:
-                    red.append("counter-test stayed GREEN: real render without installer entry")
+                label = "microos: real render without installer entry"
+                if not counter_test(label, broken_red, "added write_files"):
+                    red.append(f"counter-test stayed GREEN: {label}")
 
         if args.registries_config or args.extra_write_file:
             measure(head_tree, head["microos"], args)
