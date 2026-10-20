@@ -3473,21 +3473,24 @@ kured_options = merge({
 kured_reboot_sentinel = lookup(local.kured_options, "reboot-sentinel", "/sentinel/reboot-required")
 
 k3s_registries_update_script = <<EOF
-DATE=`date +%Y-%m-%d_%H-%M-%S`
+# registries.yaml can hold credentials: keep every copy readable by root only
+# and leave nothing behind in /tmp.
+trap 'rm -f /tmp/registries.yaml' EXIT
 mkdir -p /etc/rancher/k3s
 if cmp -s /tmp/registries.yaml /etc/rancher/k3s/registries.yaml; then
   echo "No update required to the registries.yaml file"
 else
+  rm -f /etc/rancher/k3s/registries.yaml.bak
   if [ -f /etc/rancher/k3s/registries.yaml ]; then
-    echo "Backing up /etc/rancher/k3s/registries.yaml to /tmp/registries_$DATE.yaml"
-    cp /etc/rancher/k3s/registries.yaml /tmp/registries_$DATE.yaml
+    echo "Backing up /etc/rancher/k3s/registries.yaml to /etc/rancher/k3s/registries.yaml.bak"
+    install -m 0600 /etc/rancher/k3s/registries.yaml /etc/rancher/k3s/registries.yaml.bak
   fi
   echo "Updated registries.yaml detected, restart of k3s service required"
-  cp /tmp/registries.yaml /etc/rancher/k3s/registries.yaml
+  install -m 0600 /tmp/registries.yaml /etc/rancher/k3s/registries.yaml
   if systemctl is-active --quiet k3s; then
-    systemctl restart k3s || (echo "Error: Failed to restart k3s. Restoring /etc/rancher/k3s/registries.yaml from backup" && cp /tmp/registries_$DATE.yaml /etc/rancher/k3s/registries.yaml && systemctl restart k3s)
+    systemctl restart k3s || (echo "Error: Failed to restart k3s. Restoring /etc/rancher/k3s/registries.yaml from backup" && install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml && systemctl restart k3s)
   elif systemctl is-active --quiet k3s-agent; then
-    systemctl restart k3s-agent || (echo "Error: Failed to restart k3s-agent. Restoring /etc/rancher/k3s/registries.yaml from backup" && cp /tmp/registries_$DATE.yaml /etc/rancher/k3s/registries.yaml && systemctl restart k3s-agent)
+    systemctl restart k3s-agent || (echo "Error: Failed to restart k3s-agent. Restoring /etc/rancher/k3s/registries.yaml from backup" && install -m 0600 /etc/rancher/k3s/registries.yaml.bak /etc/rancher/k3s/registries.yaml && systemctl restart k3s-agent)
   else
     echo "No active k3s or k3s-agent service found"
   fi
@@ -3754,21 +3757,24 @@ fi
 EOF
 
 rke2_registries_update_script = <<EOF
-DATE=`date +%Y-%m-%d_%H-%M-%S`
+# registries.yaml can hold credentials: keep every copy readable by root only
+# and leave nothing behind in /tmp.
+trap 'rm -f /tmp/registries.yaml' EXIT
 mkdir -p /etc/rancher/rke2
 if cmp -s /tmp/registries.yaml /etc/rancher/rke2/registries.yaml; then
   echo "No update required to the registries.yaml file"
 else
+  rm -f /etc/rancher/rke2/registries.yaml.bak
   if [ -f /etc/rancher/rke2/registries.yaml ]; then
-    echo "Backing up /etc/rancher/rke2/registries.yaml to /tmp/registries_$DATE.yaml"
-    cp /etc/rancher/rke2/registries.yaml /tmp/registries_$DATE.yaml
+    echo "Backing up /etc/rancher/rke2/registries.yaml to /etc/rancher/rke2/registries.yaml.bak"
+    install -m 0600 /etc/rancher/rke2/registries.yaml /etc/rancher/rke2/registries.yaml.bak
   fi
   echo "Updated registries.yaml detected, restart of rke2 service required"
-  cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
+  install -m 0600 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
   if systemctl is-active --quiet rke2-server; then
-    systemctl restart rke2-server || (echo "Error: Failed to restart rke2-server. Restoring /etc/rancher/rke2/registries.yaml from backup" && cp /tmp/registries_$DATE.yaml /etc/rancher/rke2/registries.yaml && systemctl restart rke2-server)
+    systemctl restart rke2-server || (echo "Error: Failed to restart rke2-server. Restoring /etc/rancher/rke2/registries.yaml from backup" && install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml && systemctl restart rke2-server)
   elif systemctl is-active --quiet rke2-agent; then
-    systemctl restart rke2-agent || (echo "Error: Failed to restart rke2-agent. Restoring /etc/rancher/rke2/registries.yaml from backup" && cp /tmp/registries_$DATE.yaml /etc/rancher/rke2/registries.yaml && systemctl restart rke2-agent)
+    systemctl restart rke2-agent || (echo "Error: Failed to restart rke2-agent. Restoring /etc/rancher/rke2/registries.yaml from backup" && install -m 0600 /etc/rancher/rke2/registries.yaml.bak /etc/rancher/rke2/registries.yaml && systemctl restart rke2-agent)
   else
     echo "No active rke2-server or rke2-agent service found"
   fi
