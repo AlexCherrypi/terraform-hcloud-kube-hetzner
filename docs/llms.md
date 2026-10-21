@@ -1692,6 +1692,20 @@ Excellent! Let's continue our meticulous dissection.
   * **Size:** Each certificate adds about 0.7 KB to the user_data of every node and autoscaler pool, which Hetzner limits to 32 KiB. RKE2 autoscaler pools have the least room, so a bundle of several CAs (for example during a CA rotation) can fail the user_data size check there.
 
 ```terraform
+  # registries_boot_reject = [
+  #   { ip = "10.43.0.50", port = 5000 },
+  # ]
+```
+
+* **`registries_boot_reject` (List of Object, Optional):**
+  * **Default:** `[]`.
+  * **Purpose:** Registry mirror endpoints on a Service ClusterIP (`ip` as IPv4, `port` as TCP port), for example an in-cluster registry cache that `registries_config` uses as a mirror. Until kube-proxy has programmed the Service after a node boots, a connection to the ClusterIP leaves the node unanswered and containerd waits 30 s per request before it falls back to the default endpoint. With an entry, each control plane, agent and autoscaler node runs the oneshot unit `kh-registries-boot-reject.service` before k3s or RKE2 starts. It loads the nftables table `inet kh_registries_boot_reject`, whose filter output chain rejects TCP connections from the node to each endpoint with a TCP reset, so containerd falls back at once.
+  * **Why it never blocks the mirror:** For locally generated packets kube-proxy's DNAT runs in the nat output hook (priority -100), before the filter output hook (priority 0). Once kube-proxy has programmed the Service, the rule only sees the translated pod address and never matches. Pod traffic takes the forward path and never meets the rule. The table is separate from the iptables tables, so it does not change the iptables backend k3s detects and does not touch the rules of kube-proxy, flannel or the network policy controller.
+  * **Checks:** The plan refuses entries when `enable_kube_proxy = false` (a kube-proxy replacement translates ClusterIPs elsewhere, so the rule would reject the mirror for good) and addresses outside `service_ipv4_cidr`.
+  * **Lifecycle:** New nodes get the unit through cloud-init and start it before the Kubernetes install. Existing nodes get it over SSH with a trigger of its own: the script checks the rules with `nft -c`, installs the unit, reloads systemd and restarts only this unit, never k3s or RKE2. Removing all entries leaves the unit and its table on existing nodes.
+  * **Size:** The unit adds about 230 bytes to the user_data of every node and autoscaler pool, plus a few dozen bytes for each further entry. RKE2 autoscaler pools have the least room: with one registry CA they keep less than 100 bytes of the 32 KiB limit.
+
+```terraform
   # embedded_registry_mirror = {
   #   enabled                  = true
   #   registries               = ["docker.io", "registry.k8s.io", "ghcr.io", "quay.io"]

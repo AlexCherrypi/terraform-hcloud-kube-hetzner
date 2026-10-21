@@ -1164,6 +1164,17 @@ module "kube-hetzner" {
   #   "my-registry-ca.pem" = file("my-registry-ca.pem")
   # }
 
+  # Registry mirror endpoints on a Service ClusterIP, for example an in-cluster registry cache that
+  # registries_config uses as a mirror. Until kube-proxy has programmed the Service after a node boots,
+  # every pull request through the mirror would wait 30 s before containerd falls back to the default
+  # endpoint. With an entry, every node rejects its own TCP connections to the endpoint with a TCP reset
+  # until kube-proxy translates the ClusterIP, so containerd falls back at once. Needs kube-proxy and
+  # addresses inside service_ipv4_cidr; pod traffic is never affected. Changes reach existing nodes over
+  # SSH without a k3s restart. Adds about 230 bytes to the user_data. The default is empty.
+  # registries_boot_reject = [
+  #   { ip = "10.43.0.50", port = 5000 },
+  # ]
+
   # Opt-in k3s/RKE2 embedded registry mirror for trusted larger clusters.
   # This enables the embedded Spegel mirror and adds empty mirror entries to the
   # effective registries.yaml. Existing registries_config mirrors/endpoints are

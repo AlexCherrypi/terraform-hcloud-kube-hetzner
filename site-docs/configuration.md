@@ -131,6 +131,7 @@
 - `cluster_name`
 - `use_cluster_name_in_node_name`
 - `registries_ca_files`
+- `registries_boot_reject`
 - `embedded_registry_mirror`
 - `additional_kubernetes_install_environment`
 - `preinstall_exec`
