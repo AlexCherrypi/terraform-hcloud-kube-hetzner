@@ -1188,6 +1188,7 @@ def base_render_vars() -> dict[str, Any]:
         "multinetwork_transport_ipv4_enabled": False,
         "multinetwork_transport_ipv6_enabled": False,
         "metadata_route_repair_script": extract_heredoc("metadata_route_repair_script"),
+        "registries_ca_file_references": ["/etc/rancher/k3s/render-harness-ca.pem"],
         "registries_config_dir": "/etc/rancher/k3s",
         "secrets_encryption_config_file": "/tmp/kh-render-harness-encryption.yaml",
         "secrets_encryption_install_script": rendered_encryption_install_script,

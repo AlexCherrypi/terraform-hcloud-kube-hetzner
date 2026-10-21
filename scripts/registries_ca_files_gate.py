@@ -22,7 +22,12 @@ Without registries_ca_files the head must plan exactly like the base:
     so no new SSH run happens,
   * every base resource keeps its configuration (provisioners, triggers,
     count and for_each; depends_on may grow), and every provisioner script
-    local of the base keeps its sha256.
+    local of the base keeps its sha256. The one exception is a
+    registries_config whose configs.*.tls.ca_file references a file: the
+    registries update scripts then gain exactly the ca_file guard (one block
+    per reference, first step of the update branch, exit 1 when the file
+    holds no certificate, no restart). That changes no planned value and
+    starts no SSH run.
 
 With one CA (--ca-file, or a throwaway ECDSA P-256 CA made with openssl)
 the head may differ from the base only by:
@@ -38,18 +43,21 @@ the head may differ from the base only by:
     node, triggered by the CA files only, while the registries.yaml
     resources keep their triggers,
   * a CA update script that installs the PEM with install -m 0644, removes
-    its temporary copy with a trap and restarts no service.
+    its temporary copy with a trap and restarts no service,
+  * the same ca_file guard rule for the registries update scripts.
 
 Counter-tests run after the comparison and must all turn the gate RED, each
 through its own finding: in-memory edits of the head plans (CA entry
 missing, wrong mode, extra key, CA content altered, another entry changed,
 a CA entry at the wrong path, a restart in the CA update script, a changed
 registries trigger, a CA trigger that also watches registries.yaml, a
-missing CA resource, a pool over --max-len, and an empty-input plan with a
-new resource, changed cloud-init or a changed script) and real renders of
-mutated head copies (entry mode 0600, a restart in the script, a CA
-resource without the empty-map guard, CA entries rendered by a template
-directive that leaves blank lines when the map is empty).
+missing CA resource, a pool over --max-len, an empty-input plan with a
+new resource, changed cloud-init or a changed script, and a ca_file guard
+that is missing, comes too late, checks another path, does not exit or
+appears without a reference) and real renders of mutated head copies (entry
+mode 0600, a restart in the script, a CA resource without the empty-map
+guard, CA entries or the ca_file guard rendered by a template directive that
+leaves blank lines when the list is empty).
 
 Exit code 0 = GREEN, 1 = RED.
 """
@@ -89,6 +97,11 @@ HOST_SERVER = re.compile(r'^(module\.(?:control_planes|agents)\["[^"]+"\])\.hclo
 AUTOSCALED_REGISTRIES = re.compile(r'^terraform_data\.autoscaled_nodes_registries\["([^"]+)"\]$')
 REGISTRIES_RESOURCE = re.compile(r'(^|\.)terraform_data\.(?:autoscaled_nodes_)?registries(\[|$)')
 CONFIGURE_AUTOSCALER = "terraform_data.configure_autoscaler[0]"
+REGISTRIES_SCRIPTS = ("k3s_registries_update_script", "rke2_registries_update_script", "k8s_registries_update_script")
+GUARD_PAYLOAD = re.compile(r"^  CA_FILE=\$\(printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d\)$", re.MULTILINE)
+GUARD_CHECK = re.compile(
+    r"^  if ! grep -qs -- '-----BEGIN CERTIFICATE-----' \"\$CA_FILE\"; then\n    echo \"Error: [^\"\n]*\"\n"
+    r"    exit 1\n  fi$", re.MULTILINE)
 RESTART = re.compile(r"\b(systemctl|service|kill|pkill|killall|reboot|shutdown|k3s-killall\.sh|rke2-killall\.sh)\b")
 
 REGISTRIES_CONFIG = (
@@ -106,6 +119,12 @@ VARIANTS = {
     "registries": ("microos", "k3s", f"    registries_config = {json.dumps(REGISTRIES_CONFIG)}\n", "max-len"),
 }
 CASES = ("empty", "ca")
+# configs.*.tls.ca_file references of each variant's registries_config.
+REFERENCES = {
+    name: [config["tls"]["ca_file"] for config in yaml.safe_load(REGISTRIES_CONFIG)["configs"].values()]
+    if "registries_config" in spec[2] else []
+    for name, spec in VARIANTS.items()
+}
 
 # Written into scratch copies only. The mocked hcloud_servers data source
 # returns no servers, and an override_data block cannot target one instance
@@ -127,6 +146,8 @@ output "zz_registries_ca_update_script" {
   value = local.registries_ca_update_script
 }
 """
+SCRIPTS_OUTPUT_TF = "output \"zz_r0_registries_scripts\" {\n  value = {\n" + "".join(
+    f"    {name} = local.{name}\n" for name in REGISTRIES_SCRIPTS) + "  }\n}\n"
 
 
 class GateError(Exception):
@@ -180,6 +201,7 @@ def render(
     (tree / "zz_r0_override.tf").write_text(OVERRIDE_TF, encoding="utf-8")
     hashes = "\n".join(f"    {name} = sha256(jsonencode(local.{name}))" for name in names)
     outputs = f'output "zz_r0_script_sha256" {{\n  sensitive = true\n  value = {{\n{hashes}\n  }}\n}}\n'
+    outputs += SCRIPTS_OUTPUT_TF
     # A head without the CA update script still renders, and fails the checks.
     if "ca" in cases and re.search(r"^ {0,2}registries_ca_update_script\s*=",
                                    (tree / "locals.tf").read_text(encoding="utf-8"), re.MULTILINE):
@@ -331,6 +353,45 @@ def check_ca_script(script: str, ca_dir: str, files: dict[str, str]) -> list[str
     return red
 
 
+def check_guard(label: str, base: dict[str, Any], head: dict[str, Any], references: list[str]) -> tuple[list[str], set[str]]:
+    """The registries update scripts gain the ca_file guard, and only that.
+
+    Returns the findings and the script locals that may change their sha256.
+    """
+
+    red: list[str] = []
+    texts_before = outputs(base).get("zz_r0_registries_scripts") or {}
+    texts_after = outputs(head).get("zz_r0_registries_scripts") or {}
+    if sorted(texts_before) != sorted(REGISTRIES_SCRIPTS) or sorted(texts_after) != sorted(REGISTRIES_SCRIPTS):
+        return [f"{label}: registries update scripts not rendered"], set()
+    for name in REGISTRIES_SCRIPTS:
+        before, after = texts_before[name], texts_after[name]
+        if not references:
+            if before != after:
+                red.append(f"{label}: {name} changed without a ca_file reference")
+            continue
+        lines_before, lines_after = before.splitlines(keepends=True), after.splitlines(keepends=True)
+        opcodes = [op for op in difflib.SequenceMatcher(None, lines_before, lines_after, autojunk=False).get_opcodes()
+                   if op[0] != "equal"]
+        if not opcodes:
+            red.append(f"{label}: {name}: ca_file guard missing")
+            continue
+        if len(opcodes) != 1 or opcodes[0][0] != "insert":
+            red.append(f"{label}: {name}: changed outside one inserted ca_file guard ({len(opcodes)} edits)")
+            continue
+        at, inserted = opcodes[0][1], "".join(lines_after[opcodes[0][3]:opcodes[0][4]])
+        if at < 2 or lines_before[at - 1] != "else\n" or "No update required" not in lines_before[at - 2]:
+            red.append(f"{label}: {name}: ca_file guard is not the first step of the update branch")
+        checked = [base64.b64decode(payload).decode() for payload in GUARD_PAYLOAD.findall(inserted)]
+        if checked != references:
+            red.append(f"{label}: {name}: ca_file guard checks {checked}, want {references}")
+        if len(GUARD_CHECK.findall(inserted)) != len(references) or len(inserted.splitlines()) != 5 * len(references):
+            red.append(f"{label}: {name}: ca_file guard is not exactly one failing certificate check per reference")
+        if RESTART.search(inserted):
+            red.append(f"{label}: {name}: ca_file guard restarts or stops a service")
+    return red, set(REGISTRIES_SCRIPTS) if references else set()
+
+
 def check_wiring(configuration: dict[str, Any]) -> list[str]:
     """The CA resources trigger on the CA files only and run the CA script."""
 
@@ -377,11 +438,15 @@ def check_empty(label: str, base: dict[str, Any], head: dict[str, Any]) -> list[
     hashes_before = outputs_before.pop("zz_r0_script_sha256", {}) or {}
     hashes_after = outputs_after.pop("zz_r0_script_sha256", {}) or {}
     outputs_after.pop("zz_registries_ca_update_script", None)
+    outputs_before.pop("zz_r0_registries_scripts", None)
+    outputs_after.pop("zz_r0_registries_scripts", None)
     if canon(outputs_before) != canon(outputs_after):
         red.append(f"{label}: empty input: outputs changed")
+    guard_red, guarded = check_guard(label, base, head, REFERENCES[label])
+    red += guard_red
     scripts = sorted(name for name in hashes_before if hashes_after.get(name) != hashes_before[name])
-    if scripts or not hashes_before:
-        red.append(f"{label}: empty input: provisioner script changed: {scripts or 'no hashes'}")
+    if set(scripts) - guarded or not hashes_before:
+        red.append(f"{label}: empty input: provisioner script changed: {sorted(set(scripts) - guarded) or 'no hashes'}")
     config_before = config_resources(base["configuration"]["root_module"])
     config_after = config_resources(head["configuration"]["root_module"])
     moved = sorted(a for a in config_before if canon(config_before[a]) != canon(config_after.get(a)))
@@ -460,9 +525,11 @@ def check_ca(
 
     hashes_before = outputs(base).get("zz_r0_script_sha256") or {}
     hashes_after = outputs(head).get("zz_r0_script_sha256") or {}
+    guard_red, guarded = check_guard(label, base, head, REFERENCES[label])
+    red += guard_red
     scripts = sorted(name for name in hashes_before if hashes_after.get(name) != hashes_before[name])
-    if scripts:
-        red.append(f"{label}: CA input changed provisioner scripts: {scripts}")
+    if set(scripts) - guarded:
+        red.append(f"{label}: CA input changed provisioner scripts: {sorted(set(scripts) - guarded)}")
     red += [f"{label}: {finding}" for finding in check_ca_script(script, ca_dir, {CA_NAME: pem})]
     red += [f"{label}: {finding}" for finding in check_wiring(head["configuration"])]
     return red, lengths
@@ -524,6 +591,39 @@ def change_script_hash(plan: dict[str, Any], name: str) -> dict[str, Any]:
     result = copy.deepcopy(plan)
     result["output_changes"]["zz_r0_script_sha256"]["after"][name] = "0" * 64
     return result
+
+
+def edit_scripts(plan: dict[str, Any], edit: Callable[[str], str]) -> dict[str, Any]:
+    result = copy.deepcopy(plan)
+    texts = result["output_changes"]["zz_r0_registries_scripts"]["after"]
+    for name in REGISTRIES_SCRIPTS:
+        texts[name] = edit(texts[name])
+    return result
+
+
+def guard_edit(how: str, guard: str = "") -> Callable[[str], str]:
+    """Edit the ca_file guard of a registries update script (counter-tests only)."""
+
+    def edit(text: str) -> str:
+        lines = text.splitlines(keepends=True)
+        if how == "add":
+            at = next(i for i, line in enumerate(lines) if line == "else\n") + 1
+            return "".join(lines[:at]) + guard + "".join(lines[at:])
+        start = next(i for i, line in enumerate(lines) if line.startswith("  CA_FILE="))
+        block = lines[start:start + 5]
+        if how == "remove":
+            del lines[start:start + 5]
+        elif how == "late":
+            del lines[start:start + 5]
+            at = next(i for i, line in enumerate(lines) if i >= start and line.startswith("  rm -f ")) + 1
+            lines[at:at] = block
+        elif how == "path":
+            payload = base64.b64encode(b"/etc/rancher/k3s/other-ca.pem").decode()
+            lines[start] = GUARD_PAYLOAD.sub(lambda _: f"  CA_FILE=$(printf '%s' '{payload}' | base64 -d)", lines[start])
+        elif how == "no-exit":
+            lines.remove("    exit 1\n")
+        return "".join(lines)
+    return edit
 
 
 def ca_lines(text: str, path: str) -> tuple[int, int]:
@@ -590,6 +690,16 @@ def in_memory_counter_tests(
         return {**renders["microos_empty"],
                 "resource_changes": renders["microos_empty"]["resource_changes"] + extra[:1]}
 
+    guard_after = outputs(head["registries"])["zz_r0_registries_scripts"]["k3s_registries_update_script"]
+    guard_before = outputs(base["registries_empty"])["zz_r0_registries_scripts"]["k3s_registries_update_script"]
+    guard_lines = guard_after.splitlines(keepends=True)
+    guard = "".join(line for op in difflib.SequenceMatcher(
+        None, guard_before.splitlines(keepends=True), guard_lines, autojunk=False).get_opcodes()
+        if op[0] == "insert" for line in guard_lines[op[3]:op[4]])
+
+    def guarded(how: str) -> list[str]:
+        return run_ca("registries", edit_scripts(head["registries"], guard_edit(how)))
+
     k3s_restart = scripts["microos"] + "systemctl restart k3s-agent\n"
     rke2_restart = scripts["rke2"].replace("set -eu\n", "set -eu\nsystemctl restart rke2-agent\n")
     cases = [
@@ -622,6 +732,16 @@ def in_memory_counter_tests(
          lambda: check_empty("microos", base["microos_empty"],
                              edit_host(renders["microos_empty"], lambda text: text + "# changed\n")),
          "empty input: planned values changed"),
+        ("registries: ca_file guard missing", lambda: guarded("remove"), "ca_file guard missing"),
+        ("registries: ca_file guard after the backup step", lambda: guarded("late"),
+         "ca_file guard is not the first step"),
+        ("registries: ca_file guard checks another path", lambda: guarded("path"), "ca_file guard checks"),
+        ("registries: ca_file guard does not exit", lambda: guarded("no-exit"),
+         "ca_file guard is not exactly one failing certificate check"),
+        ("microos: ca_file guard without a reference",
+         lambda: check_empty("microos", base["microos_empty"],
+                             edit_scripts(renders["microos_empty"], guard_edit("add", guard))),
+         "changed without a ca_file reference"),
         ("rke2: empty input changes a provisioner script",
          lambda: check_empty("rke2", base["rke2_empty"],
                              change_script_hash(renders["rke2_empty"], "k8s_registries_update_script")),
@@ -643,6 +763,9 @@ MUTATIONS = {
     "real render: CA resource without the empty-map guard": (
         "modules/host/main.tf", "count = length(var.registries_ca_files) > 0 ? 1 : 0", "count = 1",
         "empty input: resource instances added"),
+    "real render: ca_file guard leaves a blank line without references": (
+        "locals.tf", "%{endfor~}\n  rm -f /etc/rancher/k3s/registries.yaml.bak",
+        "%{endfor}\n  rm -f /etc/rancher/k3s/registries.yaml.bak", "changed without a ca_file reference"),
     "real render: CA entries rendered by a template directive": (
         "locals.tf", "  path: ${local.kubelet_config_file}\n%{endif}\nEOT",
         "  path: ${local.kubelet_config_file}\n%{endif}\n%{for name, pem in var.registries_ca_files}\n%{endfor}\nEOT",

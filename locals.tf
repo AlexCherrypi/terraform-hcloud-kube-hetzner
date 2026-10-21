@@ -409,6 +409,12 @@ EOT
     }
   ) : local.registries_config_user
   registries_config_effective = length(keys(local.registries_config_effective_map)) == 0 ? "" : yamlencode(local.registries_config_effective_map)
+
+  # Every configs.*.tls.ca_file of the effective registries.yaml.
+  registries_ca_file_references = compact([
+    for registry, config in try(local.registries_config_effective_map.configs, {}) : try(config.tls.ca_file, "")
+  ])
+
   embedded_registry_mirror_server_config = var.embedded_registry_mirror.enabled ? {
     "embedded-registry" = true
   } : {}
@@ -3473,6 +3479,10 @@ kured_options = merge({
 }, var.kured_options)
 kured_reboot_sentinel = lookup(local.kured_options, "reboot-sentinel", "/sentinel/reboot-required")
 
+# containerd fails every pull from a registry whose tls.ca_file is missing or
+# holds no certificate, without trying the default endpoint, and the restart
+# itself still succeeds. Such a registries.yaml is refused before anything is
+# restarted; without ca_file references the script renders as before.
 k3s_registries_update_script = <<EOF
 # registries.yaml can hold credentials: keep every copy readable by root only
 # and leave nothing behind in /tmp.
@@ -3481,6 +3491,13 @@ mkdir -p /etc/rancher/k3s
 if cmp -s /tmp/registries.yaml /etc/rancher/k3s/registries.yaml; then
   echo "No update required to the registries.yaml file"
 else
+%{for ca_file in local.registries_ca_file_references~}
+  CA_FILE=$(printf '%s' '${base64encode(ca_file)}' | base64 -d)
+  if ! grep -qs -- '-----BEGIN CERTIFICATE-----' "$CA_FILE"; then
+    echo "Error: $CA_FILE, a tls.ca_file of the new registries.yaml, is missing or holds no certificate. Keeping the current registries.yaml"
+    exit 1
+  fi
+%{endfor~}
   rm -f /etc/rancher/k3s/registries.yaml.bak
   if [ -f /etc/rancher/k3s/registries.yaml ]; then
     echo "Backing up /etc/rancher/k3s/registries.yaml to /etc/rancher/k3s/registries.yaml.bak"
@@ -3776,6 +3793,10 @@ else
 fi
 EOF
 
+# containerd fails every pull from a registry whose tls.ca_file is missing or
+# holds no certificate, without trying the default endpoint, and the restart
+# itself still succeeds. Such a registries.yaml is refused before anything is
+# restarted; without ca_file references the script renders as before.
 rke2_registries_update_script = <<EOF
 # registries.yaml can hold credentials: keep every copy readable by root only
 # and leave nothing behind in /tmp.
@@ -3784,6 +3805,13 @@ mkdir -p /etc/rancher/rke2
 if cmp -s /tmp/registries.yaml /etc/rancher/rke2/registries.yaml; then
   echo "No update required to the registries.yaml file"
 else
+%{for ca_file in local.registries_ca_file_references~}
+  CA_FILE=$(printf '%s' '${base64encode(ca_file)}' | base64 -d)
+  if ! grep -qs -- '-----BEGIN CERTIFICATE-----' "$CA_FILE"; then
+    echo "Error: $CA_FILE, a tls.ca_file of the new registries.yaml, is missing or holds no certificate. Keeping the current registries.yaml"
+    exit 1
+  fi
+%{endfor~}
   rm -f /etc/rancher/rke2/registries.yaml.bak
   if [ -f /etc/rancher/rke2/registries.yaml ]; then
     echo "Backing up /etc/rancher/rke2/registries.yaml to /etc/rancher/rke2/registries.yaml.bak"
