@@ -3170,6 +3170,24 @@ variable "registries_ca_files" {
   }
 }
 
+variable "registries_boot_reject" {
+  description = "Registry mirror endpoints on a Service ClusterIP (IPv4 address and TCP port, for example a registry cache that registries_config uses as a mirror). Until kube-proxy has programmed the Service after a node boots, a connection to the ClusterIP leaves the node unanswered, and containerd waits 30 s per request before it falls back to the default endpoint. Every control plane, agent and autoscaler node gets a oneshot systemd unit, kh-registries-boot-reject.service, that runs before k3s or RKE2 starts and rejects TCP connections from the node to each endpoint with a TCP reset, so containerd falls back at once. The rule lives in an nftables table of its own in the filter output hook. kube-proxy translates the ClusterIP in the nat output hook, which runs first, so the rule never matches once the Service is programmed, and pod traffic is never affected. Needs kube-proxy (enable_kube_proxy = true) and addresses inside service_ipv4_cidr. New nodes get the unit through cloud-init. The unit adds about 230 bytes, plus a few dozen bytes for each further entry, to the user_data of every node and autoscaler pool, which Hetzner limits to 32 KiB. RKE2 autoscaler pools have the least room: with one registry CA they keep less than 100 bytes."
+  type = list(object({
+    ip   = string
+    port = number
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for endpoint in var.registries_boot_reject :
+      can(regex("^[0-9.]+$", endpoint.ip)) && provider::assert::ipv4(endpoint.ip) &&
+      endpoint.port == floor(endpoint.port) && endpoint.port >= 1 && endpoint.port <= 65535
+    ])
+    error_message = "registries_boot_reject entries need an IPv4 address in dotted-decimal form and a TCP port from 1 to 65535."
+  }
+}
+
 variable "embedded_registry_mirror" {
   type = object({
     enabled                  = optional(bool, false)

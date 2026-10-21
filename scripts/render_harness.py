@@ -1137,6 +1137,7 @@ def base_render_vars() -> dict[str, Any]:
         "registries_ca_files": {
             "render-harness-ca.pem": "-----BEGIN CERTIFICATE-----\nTUlJcmVuZGVyLWhhcm5lc3M=\n-----END CERTIFICATE-----\n",
         },
+        "registries_boot_reject": [{"ip": "10.43.0.50", "port": 5000}],
         "ssh_authorized_keys_exclusive": False,
         "ssh_port": 22,
         "traefik_additional_options": ["--log.level=INFO"],
@@ -1189,6 +1190,14 @@ def base_render_vars() -> dict[str, Any]:
         "multinetwork_transport_ipv6_enabled": False,
         "metadata_route_repair_script": extract_heredoc("metadata_route_repair_script"),
         "registries_ca_file_references": ["/etc/rancher/k3s/render-harness-ca.pem"],
+        "cloudinit_runcmd_registries_boot_reject": "- [systemctl, enable, --now, kh-registries-boot-reject.service]\n",
+        "registries_boot_reject_nft": (
+            "table inet kh_registries_boot_reject;delete table inet kh_registries_boot_reject;"
+            "table inet kh_registries_boot_reject{chain output{type filter hook output priority filter;"
+            "ip daddr 10.43.0.50 tcp dport 5000 reject with tcp reset;};}"
+        ),
+        "registries_boot_reject_unit": "[Unit]\nBefore=k3s.service\n[Service]\nType=oneshot\n",
+        "registries_boot_reject_unit_name": "kh-registries-boot-reject.service",
         "registries_config_dir": "/etc/rancher/k3s",
         "secrets_encryption_config_file": "/tmp/kh-render-harness-encryption.yaml",
         "secrets_encryption_install_script": rendered_encryption_install_script,

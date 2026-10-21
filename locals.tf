@@ -3981,6 +3981,37 @@ fi
 %{endfor~}
 EOF
 
+# registries_boot_reject: until kube-proxy has programmed a ClusterIP after a
+# boot, a connection to it leaves the node unanswered and containerd waits
+# 30 s per request before it tries the next endpoint. This oneshot unit rejects
+# such connections with a TCP reset from boot on, so containerd falls back at
+# once. The rule sits in the filter output hook (priority 0). kube-proxy DNATs
+# local traffic in the nat output hook (priority -100), which runs first, so
+# the rule never matches once the Service is programmed; pod traffic takes the
+# forward path and never meets it. nft is the only packet filter tool on the
+# MicroOS images. A table of its own is invisible to iptables-save, so neither
+# the iptables backend that k3s detects nor the rules of kube-proxy, flannel
+# or the network policy controller change. Creating, deleting and recreating
+# the table in one transaction makes every run idempotent and atomic, also
+# when the list changes. The unit has no Requires= on anything and nothing
+# requires it, so a failure never holds back k3s or RKE2.
+registries_boot_reject_unit_name = "kh-registries-boot-reject.service"
+registries_boot_reject_nft = join("", [
+  "table inet kh_registries_boot_reject;delete table inet kh_registries_boot_reject;table inet kh_registries_boot_reject{chain output{type filter hook output priority filter;",
+  join("", [for endpoint in var.registries_boot_reject : "ip daddr ${endpoint.ip} tcp dport ${endpoint.port} reject with tcp reset;"]),
+  "};}",
+])
+registries_boot_reject_unit = <<EOT
+[Unit]
+Before=k3s.service k3s-agent.service rke2-server.service rke2-agent.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft '${local.registries_boot_reject_nft}'
+[Install]
+WantedBy=multi-user.target
+EOT
+
 cloudinit_write_files_common_base = <<EOT
 - path: /usr/local/sbin/kube-hetzner-reconcile-authorized-keys
   content: ${base64gzip(file("${path.module}/scripts/reconcile-authorized-keys.sh"))}
@@ -4212,13 +4243,23 @@ cloudinit_write_files_registries_ca_files = join("", [
   "- path: ${local.registries_config_dir}/${name}\n  content: ${jsonencode(pem)}\n  permissions: \"0644\"\n"
 ])
 
+# The registries_boot_reject unit, enabled and started by the runcmd entry
+# below before k3s or RKE2 is installed. Both render only when set, so the
+# user_data of clusters without them stays the same.
+cloudinit_write_files_registries_boot_reject = length(var.registries_boot_reject) > 0 ? "- path: /etc/systemd/system/${local.registries_boot_reject_unit_name}\n  content: |\n    ${indent(4, trimspace(local.registries_boot_reject_unit))}\n  permissions: \"0644\"\n" : ""
+cloudinit_runcmd_registries_boot_reject      = length(var.registries_boot_reject) > 0 ? "- [systemctl, enable, --now, ${local.registries_boot_reject_unit_name}]\n" : ""
+
 cloudinit_write_files_common = join("", [
   local.cloudinit_write_files_common_base,
   local.cloudinit_write_files_k8s_custom_policies,
   local.cloudinit_write_files_common_node_config,
   local.cloudinit_write_files_registries_ca_files,
+  local.cloudinit_write_files_registries_boot_reject,
 ])
 
+# The last line holds the registries_boot_reject runcmd entry, which runs
+# after the daemon-reload below and before k3s or RKE2 is installed. Unset, it
+# renders as the blank line that ended this block before.
 cloudinit_runcmd_common = <<EOT
 # Replace stale options on module-managed SSH identities before Terraform's
 # first connection, while preserving unrelated operator keys by default.
@@ -4320,7 +4361,7 @@ cloudinit_runcmd_common = <<EOT
 - [sed, '-i', '-E', 's/^SELINUX=[a-z]+/SELINUX=disabled/', '/etc/selinux/config']
 - [setenforce, '0']
 %{endif}
-
+${local.cloudinit_runcmd_registries_boot_reject}
 EOT
 
 }

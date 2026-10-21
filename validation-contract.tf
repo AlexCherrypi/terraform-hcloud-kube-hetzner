@@ -445,6 +445,26 @@ resource "terraform_data" "validation_contract" {
       error_message = "cluster_ipv4_cidr and service_ipv4_cidr must not be identical."
     }
 
+    # The boot reject rule relies on kube-proxy's netfilter DNAT, which runs
+    # before the rule. A kube-proxy replacement (Cilium eBPF) translates the
+    # ClusterIP elsewhere, and an address outside the Service CIDR is never
+    # translated: the rule would then reject every connection, for good.
+    precondition {
+      condition     = length(var.registries_boot_reject) == 0 || var.enable_kube_proxy
+      error_message = "registries_boot_reject needs kube-proxy (enable_kube_proxy = true): its rule must be passed by kube-proxy's DNAT, and a kube-proxy replacement would leave the endpoints rejected for good."
+    }
+
+    precondition {
+      condition = alltrue([
+        for endpoint in var.registries_boot_reject :
+        local.service_ipv4_cidr_effective != null && try(
+          cidrhost("${endpoint.ip}/${split("/", local.service_ipv4_cidr_effective)[1]}", 0) == cidrhost(local.service_ipv4_cidr_effective, 0),
+          false
+        )
+      ])
+      error_message = "registries_boot_reject addresses must lie inside service_ipv4_cidr: kube-proxy translates only Service ClusterIPs, so any other address would stay rejected for good."
+    }
+
     # Moved from variable "cluster_ipv6_cidr" validation near variables.tf:836.
     precondition {
       condition = (

@@ -943,7 +943,8 @@ def in_memory_counter_tests(
 MUTATIONS = {
     # label: (file, old, new, finding[, variant, default microos])
     "real render: CA entry mode 0600": (
-        "locals.tf", '\\n  permissions: \\"0644\\"\\n"', '\\n  permissions: \\"0600\\"\\n"', "CA entry permissions"),
+        "locals.tf", '${jsonencode(pem)}\\n  permissions: \\"0644\\"\\n"', '${jsonencode(pem)}\\n  permissions: \\"0600\\"\\n"',
+        "CA entry permissions"),
     "real render: restart in the CA update script": (
         "locals.tf", "%{endfor~}\nEOF", "systemctl restart k3s-agent\n%{endfor~}\nEOF", "CA update script restarts"),
     "real render: CA resource without the empty-map guard": (
