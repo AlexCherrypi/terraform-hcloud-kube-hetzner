@@ -3142,7 +3142,7 @@ variable "registries_config" {
 }
 
 variable "registries_ca_files" {
-  description = "Registry CA certificates (PEM), keyed by file name. Every control plane, agent and autoscaler node gets each file next to registries.yaml (/etc/rancher/k3s/NAME, or /etc/rancher/rke2/NAME with RKE2) with mode 0644, so registries_config can point configs.REGISTRY.tls.ca_file at it. New nodes get the files through cloud-init before Kubernetes starts. Existing nodes get them over SSH, with a trigger of their own and without a Kubernetes restart. Removing an entry leaves the file on existing nodes. The files are part of the node user_data, so only certificates are accepted."
+  description = "Registry CA certificates (PEM), keyed by file name. Every control plane, agent and autoscaler node gets each file next to registries.yaml (/etc/rancher/k3s/NAME, or /etc/rancher/rke2/NAME with RKE2) with mode 0644, so registries_config can point configs.REGISTRY.tls.ca_file at it. New nodes get the files through cloud-init before Kubernetes starts. Existing nodes get them over SSH, with a trigger of their own and without a Kubernetes restart. Removing an entry leaves the file on existing nodes. The files are part of the node user_data, so only certificates are accepted, and each certificate adds about 0.7 KB to the user_data of every node and autoscaler pool, which Hetzner limits to 32 KiB. RKE2 autoscaler pools have the least room, so a bundle of several CAs, for example during a CA rotation, can fail the user_data size check there."
   type        = map(string)
   default     = {}
 

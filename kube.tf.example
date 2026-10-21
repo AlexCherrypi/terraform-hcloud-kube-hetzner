@@ -1157,8 +1157,9 @@ module "kube-hetzner" {
   # CA certificates for registries with a private CA, keyed by file name. Each file is written next to
   # registries.yaml (/etc/rancher/k3s/, or /etc/rancher/rke2/ with RKE2) on every node, mode 0644, so
   # registries_config can reference it as configs."<registry>".tls.ca_file. Changes reach existing nodes
-  # over SSH without a k3s restart. Certificates only: the files are part of the node user_data.
-  # The default is empty.
+  # over SSH without a k3s restart. Certificates only: the files are part of the node user_data,
+  # and each certificate adds about 0.7 KB to it. RKE2 autoscaler pools have the least room under
+  # the 32 KiB user_data limit, so a bundle of several CAs can fail there. The default is empty.
   # registries_ca_files = {
   #   "my-registry-ca.pem" = file("my-registry-ca.pem")
   # }

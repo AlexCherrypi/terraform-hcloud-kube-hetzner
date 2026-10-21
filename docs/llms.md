@@ -1687,7 +1687,9 @@ Excellent! Let's continue our meticulous dissection.
   * **Default:** `{}`.
   * **Purpose:** CA certificates (PEM) for registries with a private CA. Each entry is written next to `registries.yaml` (`/etc/rancher/k3s/<name>`, or `/etc/rancher/rke2/<name>` with RKE2) on control planes, agents and autoscaler nodes with mode `0644`, so `registries_config` can reference it as `configs."<registry>".tls.ca_file`.
   * **Lifecycle:** New nodes get the files through cloud-init before Kubernetes starts. Existing nodes get them over SSH with a trigger separate from `registries_config`; a CA-only change rewrites the files and restarts nothing, because containerd reads `hosts.toml` CA files on every pull. Removing an entry leaves the file on existing nodes.
+  * **Checks:** The plan warns when `registries_config` points a `tls.ca_file` under the registries directory at a file this map does not provide. A `registries_config` update refuses a `registries.yaml` whose `tls.ca_file` is missing on the node or holds no certificate, before anything is restarted, because containerd would fail every pull from that registry without trying the default endpoint.
   * **Security:** The files are part of the node user_data, so only certificates are accepted, never private keys.
+  * **Size:** Each certificate adds about 0.7 KB to the user_data of every node and autoscaler pool, which Hetzner limits to 32 KiB. RKE2 autoscaler pools have the least room, so a bundle of several CAs (for example during a CA rotation) can fail the user_data size check there.
 
 ```terraform
   # embedded_registry_mirror = {
