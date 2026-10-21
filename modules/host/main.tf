@@ -258,11 +258,41 @@ resource "terraform_data" "registries" {
     inline = [var.registries_update_script]
   }
 
-  depends_on = [terraform_data.initial_readiness]
+  # A registries.yaml that references a CA file needs the file first.
+  depends_on = [terraform_data.initial_readiness, terraform_data.registries_ca_files]
 }
 moved {
   from = null_resource.registries
   to   = terraform_data.registries
+}
+
+# Separate from terraform_data.registries: a CA-only change rewrites the CA
+# files and never restarts Kubernetes.
+resource "terraform_data" "registries_ca_files" {
+  count = length(var.registries_ca_files) > 0 ? 1 : 0
+
+  triggers_replace = {
+    registries_ca_files = var.registries_ca_files
+  }
+
+  connection {
+    user           = "root"
+    private_key    = var.ssh_private_key
+    agent_identity = local.ssh_agent_identity
+    host           = local.provisioner_connection_host
+    port           = var.ssh_port
+
+    bastion_host        = var.ssh_bastion.bastion_host
+    bastion_port        = var.ssh_bastion.bastion_port
+    bastion_user        = var.ssh_bastion.bastion_user
+    bastion_private_key = var.ssh_bastion.bastion_private_key
+  }
+
+  provisioner "remote-exec" {
+    inline = [var.registries_ca_update_script]
+  }
+
+  depends_on = [terraform_data.initial_readiness]
 }
 
 resource "terraform_data" "kubelet_config" {

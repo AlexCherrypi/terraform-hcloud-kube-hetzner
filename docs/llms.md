@@ -1686,7 +1686,7 @@ Excellent! Let's continue our meticulous dissection.
 * **`registries_ca_files` (Map of String, Optional):**
   * **Default:** `{}`.
   * **Purpose:** CA certificates (PEM) for registries with a private CA. Each entry is written next to `registries.yaml` (`/etc/rancher/k3s/<name>`, or `/etc/rancher/rke2/<name>` with RKE2) on control planes, agents and autoscaler nodes with mode `0644`, so `registries_config` can reference it as `configs."<registry>".tls.ca_file`.
-  * **Lifecycle:** New nodes get the files through cloud-init before Kubernetes starts.
+  * **Lifecycle:** New nodes get the files through cloud-init before Kubernetes starts. Existing nodes get them over SSH with a trigger separate from `registries_config`; a CA-only change rewrites the files and restarts nothing, because containerd reads `hosts.toml` CA files on every pull. Removing an entry leaves the file on existing nodes.
   * **Security:** The files are part of the node user_data, so only certificates are accepted, never private keys.
 
 ```terraform

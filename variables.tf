@@ -3142,7 +3142,7 @@ variable "registries_config" {
 }
 
 variable "registries_ca_files" {
-  description = "Registry CA certificates (PEM), keyed by file name. Every control plane, agent and autoscaler node gets each file next to registries.yaml (/etc/rancher/k3s/NAME, or /etc/rancher/rke2/NAME with RKE2) with mode 0644, so registries_config can point configs.REGISTRY.tls.ca_file at it. New nodes get the files through cloud-init before Kubernetes starts. The files are part of the node user_data, so only certificates are accepted."
+  description = "Registry CA certificates (PEM), keyed by file name. Every control plane, agent and autoscaler node gets each file next to registries.yaml (/etc/rancher/k3s/NAME, or /etc/rancher/rke2/NAME with RKE2) with mode 0644, so registries_config can point configs.REGISTRY.tls.ca_file at it. New nodes get the files through cloud-init before Kubernetes starts. Existing nodes get them over SSH, with a trigger of their own and without a Kubernetes restart. Removing an entry leaves the file on existing nodes. The files are part of the node user_data, so only certificates are accepted."
   type        = map(string)
   default     = {}
 

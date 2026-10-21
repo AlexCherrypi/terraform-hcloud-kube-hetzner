@@ -178,6 +178,16 @@ variable "registries_update_script" {
   type    = string
 }
 
+variable "registries_ca_files" {
+  default = {}
+  type    = map(string)
+}
+
+variable "registries_ca_update_script" {
+  default = ""
+  type    = string
+}
+
 variable "kubelet_config" {
   default = ""
   type    = string

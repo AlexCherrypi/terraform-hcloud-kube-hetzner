@@ -63,6 +63,8 @@ module "control_planes" {
   dns_servers                   = var.dns_servers
   registries_config             = local.registries_config_effective
   registries_update_script      = local.k8s_registries_update_script
+  registries_ca_files           = var.registries_ca_files
+  registries_ca_update_script   = local.registries_ca_update_script
   kubelet_config                = var.kubelet_config
   kubelet_config_update_script  = local.k8s_kubelet_config_update_script
   audit_policy_config           = var.audit_policy_config

@@ -356,10 +356,39 @@ resource "terraform_data" "autoscaled_nodes_registries" {
   provisioner "remote-exec" {
     inline = [local.k8s_registries_update_script]
   }
+
+  # A registries.yaml that references a CA file needs the file first.
+  depends_on = [terraform_data.autoscaled_nodes_registries_ca_files]
 }
 moved {
   from = null_resource.autoscaled_nodes_registries
   to   = terraform_data.autoscaled_nodes_registries
+}
+
+# Separate from terraform_data.autoscaled_nodes_registries: a CA-only change
+# rewrites the CA files and never restarts k3s-agent or rke2-agent.
+resource "terraform_data" "autoscaled_nodes_registries_ca_files" {
+  for_each = length(var.registries_ca_files) > 0 ? local.autoscaled_nodes : {}
+  triggers_replace = {
+    registries_ca_files = var.registries_ca_files
+  }
+
+  connection {
+    user           = "root"
+    private_key    = var.ssh_private_key
+    agent_identity = local.ssh_agent_identity
+    host           = local.tailscale_use_tailnet_for_terraform ? "${each.value.name}.${local.tailscale_magicdns_domain}" : coalesce(each.value.ipv4_address, each.value.ipv6_address, try(one(each.value.network).ip, null))
+    port           = var.ssh_port
+
+    bastion_host        = local.ssh_bastion.bastion_host
+    bastion_port        = local.ssh_bastion.bastion_port
+    bastion_user        = local.ssh_bastion.bastion_user
+    bastion_private_key = local.ssh_bastion.bastion_private_key
+  }
+
+  provisioner "remote-exec" {
+    inline = [local.registries_ca_update_script]
+  }
 }
 
 resource "terraform_data" "autoscaled_nodes_kubelet_config" {

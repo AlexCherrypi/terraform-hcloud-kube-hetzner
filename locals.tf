@@ -3931,6 +3931,28 @@ k8s_kubelet_config_update_script        = local.kubernetes_distribution == "k3s"
 k8s_config_update_script                = local.kubernetes_distribution == "k3s" ? local.k3s_config_update_script : local.rke2_config_update_script
 k8s_authentication_config_update_script = local.kubernetes_distribution == "k3s" ? local.k3s_authentication_config_update_script : local.rke2_authentication_config_update_script
 
+# Updates registries_ca_files on running nodes. containerd reads the CA files
+# of hosts.toml on every pull, so nothing is restarted. A changed file is
+# renamed into place from its own directory: a pull never reads half a file,
+# and the file gets the directory's SELinux label.
+registries_ca_update_script = <<EOF
+set -eu
+CA_DIR=${local.registries_config_dir}
+mkdir -p "$CA_DIR"
+CA_TMP=$(mktemp)
+trap 'rm -f "$CA_TMP" "$CA_DIR/.registries-ca-file.new"' EXIT
+%{for name, pem in var.registries_ca_files~}
+printf '%s' '${base64encode(pem)}' | base64 -d > "$CA_TMP"
+if cmp -s "$CA_TMP" "$CA_DIR/${name}" && [ "$(stat -c '%a %u %g' "$CA_DIR/${name}")" = "644 0 0" ]; then
+  echo "$CA_DIR/${name} is up to date"
+else
+  install -m 0644 -o root -g root "$CA_TMP" "$CA_DIR/.registries-ca-file.new"
+  mv -fT "$CA_DIR/.registries-ca-file.new" "$CA_DIR/${name}"
+  echo "Updated $CA_DIR/${name}"
+fi
+%{endfor~}
+EOF
+
 cloudinit_write_files_common_base = <<EOT
 - path: /usr/local/sbin/kube-hetzner-reconcile-authorized-keys
   content: ${base64gzip(file("${path.module}/scripts/reconcile-authorized-keys.sh"))}
