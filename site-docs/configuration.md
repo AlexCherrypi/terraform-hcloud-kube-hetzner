@@ -130,6 +130,7 @@
 - `system_upgrade_schedule_window`
 - `cluster_name`
 - `use_cluster_name_in_node_name`
+- `registries_ca_files`
 - `embedded_registry_mirror`
 - `additional_kubernetes_install_environment`
 - `preinstall_exec`

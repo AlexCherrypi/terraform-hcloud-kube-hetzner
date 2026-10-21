@@ -1154,6 +1154,14 @@ module "kube-hetzner" {
           password: password
   EOT */
 
+  # CA certificates for registries with a private CA, keyed by file name. Each file is written next to
+  # registries.yaml (/etc/rancher/k3s/, or /etc/rancher/rke2/ with RKE2) on every node, mode 0644, so
+  # registries_config can reference it as configs."<registry>".tls.ca_file. Certificates only: the files
+  # are part of the node user_data. The default is empty.
+  # registries_ca_files = {
+  #   "my-registry-ca.pem" = file("my-registry-ca.pem")
+  # }
+
   # Opt-in k3s/RKE2 embedded registry mirror for trusted larger clusters.
   # This enables the embedded Spegel mirror and adds empty mirror entries to the
   # effective registries.yaml. Existing registries_config mirrors/endpoints are

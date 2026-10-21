@@ -242,6 +242,7 @@ data "cloudinit_config" "autoscaler_config" {
           local.cloudinit_write_files_common_base,
           local.autoscaler_nodepools_os[count.index] == "leapmicro" ? local.cloudinit_write_files_k8s_custom_policies : "",
           local.cloudinit_write_files_common_node_config,
+          local.cloudinit_write_files_registries_ca_files,
           local.autoscaler_node_annotation_write_files_yaml[count.index],
         ])
         cloudinit_runcmd_common             = join("", [local.cloudinit_runcmd_common, local.autoscaler_node_annotation_runcmd_yaml[count.index]])

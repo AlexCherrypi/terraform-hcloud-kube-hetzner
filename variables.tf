@@ -3141,6 +3141,25 @@ variable "registries_config" {
   }
 }
 
+variable "registries_ca_files" {
+  description = "Registry CA certificates (PEM), keyed by file name. Every control plane, agent and autoscaler node gets each file next to registries.yaml (/etc/rancher/k3s/NAME, or /etc/rancher/rke2/NAME with RKE2) with mode 0644, so registries_config can point configs.REGISTRY.tls.ca_file at it. New nodes get the files through cloud-init before Kubernetes starts. The files are part of the node user_data, so only certificates are accepted."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.registries_ca_files) : can(regex("^[A-Za-z0-9][A-Za-z0-9._-]*\\.(crt|pem)$", name))])
+    error_message = "registries_ca_files keys must be plain file names ending in .crt or .pem."
+  }
+
+  validation {
+    condition = alltrue([
+      for pem in values(var.registries_ca_files) :
+      length(regexall("-----BEGIN CERTIFICATE-----", pem)) > 0 && length(regexall("-----BEGIN ", pem)) == length(regexall("-----BEGIN CERTIFICATE-----", pem))
+    ])
+    error_message = "registries_ca_files values must be PEM certificates without private keys or other PEM blocks."
+  }
+}
+
 variable "embedded_registry_mirror" {
   type = object({
     enabled                  = optional(bool, false)

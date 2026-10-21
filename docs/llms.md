@@ -1678,6 +1678,18 @@ Excellent! Let's continue our meticulous dissection.
   * **Reference:** The k3s private registry documentation is key.
 
 ```terraform
+  # registries_ca_files = {
+  #   "my-registry-ca.pem" = file("my-registry-ca.pem")
+  # }
+```
+
+* **`registries_ca_files` (Map of String, Optional):**
+  * **Default:** `{}`.
+  * **Purpose:** CA certificates (PEM) for registries with a private CA. Each entry is written next to `registries.yaml` (`/etc/rancher/k3s/<name>`, or `/etc/rancher/rke2/<name>` with RKE2) on control planes, agents and autoscaler nodes with mode `0644`, so `registries_config` can reference it as `configs."<registry>".tls.ca_file`.
+  * **Lifecycle:** New nodes get the files through cloud-init before Kubernetes starts.
+  * **Security:** The files are part of the node user_data, so only certificates are accepted, never private keys.
+
+```terraform
   # embedded_registry_mirror = {
   #   enabled                  = true
   #   registries               = ["docker.io", "registry.k8s.io", "ghcr.io", "quay.io"]

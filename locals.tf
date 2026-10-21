@@ -2887,6 +2887,7 @@ EOT
   var.etcd_s3_backup) : {}
 
   registries_config_file      = local.kubernetes_distribution == "rke2" ? "/etc/rancher/rke2/registries.yaml" : "/etc/rancher/k3s/registries.yaml"
+  registries_config_dir       = local.kubernetes_distribution == "rke2" ? "/etc/rancher/rke2" : "/etc/rancher/k3s"
   kubelet_config_file         = local.kubernetes_distribution == "rke2" ? "/etc/rancher/rke2/kubelet-config.yaml" : "/etc/rancher/k3s/kubelet-config.yaml"
   kubelet_arg                 = concat(["cloud-provider=external", "volume-plugin-dir=/var/lib/kubelet/volumeplugins"], var.kubelet_config != "" ? ["config=${local.kubelet_config_file}"] : [])
   kube_controller_manager_arg = "flex-volume-plugin-dir=/var/lib/kubelet/volumeplugins"
@@ -4153,10 +4154,19 @@ cloudinit_write_files_common_node_config = <<EOT
 %{endif}
 EOT
 
+# Registry CA certificates next to registries.yaml, for configs.*.tls.ca_file.
+# Rendered only when set, so the user_data of clusters without them stays the
+# same. A JSON string is a valid YAML scalar and keeps the PEM byte for byte.
+cloudinit_write_files_registries_ca_files = join("", [
+  for name, pem in var.registries_ca_files :
+  "- path: ${local.registries_config_dir}/${name}\n  content: ${jsonencode(pem)}\n  permissions: \"0644\"\n"
+])
+
 cloudinit_write_files_common = join("", [
   local.cloudinit_write_files_common_base,
   local.cloudinit_write_files_k8s_custom_policies,
   local.cloudinit_write_files_common_node_config,
+  local.cloudinit_write_files_registries_ca_files,
 ])
 
 cloudinit_runcmd_common = <<EOT
