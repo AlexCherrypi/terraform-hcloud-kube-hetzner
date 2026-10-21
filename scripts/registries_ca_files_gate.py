@@ -125,6 +125,9 @@ REGISTRIES_CONFIG = (
     "mirrors:\n  docker.io:\n    endpoint:\n      - https://10.43.0.50:5000\n"
     'configs:\n  "10.43.0.50:5000":\n    tls:\n      ca_file: /etc/rancher/k3s/registry-cache-ca.pem\n'
 )
+# Default --max-len: the self-imposed cloudInit cap of the k3s MicroOS pools,
+# below the 32 KiB Hetzner limit that every other pool only has to fit.
+MAX_LEN = 27000
 # Variant -> (OS of the static agent and the autoscaler pools, distribution,
 # extra variables, size limit). Control planes stay on MicroOS. The k3s
 # MicroOS pools carry --max-len; Leap Micro pools keep the SELinux policy and
@@ -1036,7 +1039,8 @@ def main() -> int:
     parser.add_argument("--cli", default="tofu", choices=("tofu", "terraform"))
     parser.add_argument("--plugin-dir", help="provider plugin directory for an offline init")
     parser.add_argument("--ca-file", help="PEM CA certificate to render (default: a throwaway ECDSA P-256 CA)")
-    parser.add_argument("--max-len", type=int, default=26600)
+    parser.add_argument("--max-len", type=int, default=MAX_LEN,
+                        help="cloudInit cap of the k3s MicroOS pools in bytes")
     parser.add_argument("--delta-min", type=int, default=300)
     parser.add_argument("--delta-max", type=int, default=1200)
     parser.add_argument("--no-counter-test", action="store_true", help="skip the mutated real renders")

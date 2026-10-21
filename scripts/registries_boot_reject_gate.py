@@ -54,7 +54,7 @@ with enable_kube_proxy = false and no entries must pass, so the kube-proxy
 failure comes from this input.
 
 The report lists the user_data length of every pool and static node against
-the 26,600 B cap of MicroOS pools, the 27,500 B cap during a two-CA bundle
+the 27,000 B cap of MicroOS pools, the 27,500 B cap during a two-CA bundle
 and the 32,768 B Hetzner limit. The static user_data is unknown at plan
 time, so its length is estimated from the cloud-config text and calibrated
 on the pools of the same run. --ca-file with a bundle of two certificates
@@ -722,7 +722,8 @@ def mutation_counter_tests(head_tree: Path, scratch: Path, base: dict[str, Any],
 
 
 def report(sizes: list[tuple[str, str, int, int]]) -> None:
-    caps = (("26,600 cap", 26600), ("27,500 two-CA cap", CAP_TWO_CAS), ("32,768 limit", cig.USER_DATA_LIMIT))
+    caps = ((f"{cag.MAX_LEN:,} cap", cag.MAX_LEN), (f"{CAP_TWO_CAS:,} two-CA cap", CAP_TWO_CAS),
+            (f"{cig.USER_DATA_LIMIT:,} limit", cig.USER_DATA_LIMIT))
     for label, what, before, after in sizes:
         left = ", ".join(f"{after_cap - after:+d} B to the {name}" for name, after_cap in caps)
         print(f"  {label} {what}: {before} -> {after} B (+{after - before} B; {left})")
@@ -736,7 +737,8 @@ def main() -> int:
     parser.add_argument("--cli", default="tofu", choices=("tofu", "terraform"))
     parser.add_argument("--plugin-dir", help="provider plugin directory for an offline init")
     parser.add_argument("--ca-file", help="PEM CA certificate or bundle (default: a throwaway ECDSA P-256 CA)")
-    parser.add_argument("--max-len", type=int, default=26600)
+    parser.add_argument("--max-len", type=int, default=cag.MAX_LEN,
+                        help="cloudInit cap of the k3s MicroOS pools in bytes (27500 for a two-CA bundle)")
     parser.add_argument("--delta-min", type=int, default=100)
     parser.add_argument("--delta-max", type=int, default=450)
     parser.add_argument("--no-counter-test", action="store_true", help="skip the mutated real renders")
