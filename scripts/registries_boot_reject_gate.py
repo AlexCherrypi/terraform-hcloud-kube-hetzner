@@ -39,8 +39,9 @@ With entries the head may differ from the base only by:
     entry) and staying at or below --max-len (MicroOS k3s pools) or 32 KiB,
   * one terraform_data.registries_boot_reject[0] per static node and one
     terraform_data.autoscaled_nodes_registries_boot_reject per autoscaled
-    node, triggered by registries_boot_reject only, each running the update
-    script once over remote-exec,
+    node, triggered by registries_boot_reject and the sha256 of the update
+    script, which embeds the unit, each running the update script once over
+    remote-exec,
   * an update script that checks the nft transaction with nft -c, installs
     the same unit with install -m 0644 and a rename in /etc/systemd/system,
     removes its temporary copy with a trap and runs systemctl only for
@@ -65,12 +66,13 @@ altered, unit not ordered after network-pre.target, a failing nft that
 marks the unit failed, runcmd item missing or after the install, a pool
 over --max-len, an empty-input plan with an added resource or a changed
 script, a restart of k3s in the update script, a trigger that watches
-registries_config) and real renders of mutated head copies (unit mode 0600,
+registries_config or lacks the script hash) and real renders of mutated head
+copies (unit mode 0600,
 the rule hooked before the DNAT, a unit not ordered after network-pre.target,
 a pool without the unit, the runcmd item after the agent install, a resource
-without the empty-list guard, a blank line left by the empty runcmd entry, a
-k3s restart in the update script, address and kube-proxy checks that always
-pass).
+without the empty-list guard, a host trigger without the script hash, a blank
+line left by the empty runcmd entry, a k3s restart in the update script,
+address and kube-proxy checks that always pass).
 
 Exit code 0 = GREEN, 1 = RED.
 """
@@ -81,6 +83,7 @@ import argparse
 import base64
 import copy
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -406,7 +409,7 @@ def check_script(script: str, unit: str, entries: list[tuple[str, int]]) -> list
 
 
 def check_wiring(configuration: dict[str, Any]) -> list[str]:
-    """Each boot reject resource triggers on the input only and runs the update script once."""
+    """Each boot reject resource triggers on the input and the update script and runs the script once."""
 
     red: list[str] = []
     root = configuration["root_module"]
@@ -424,9 +427,9 @@ def check_wiring(configuration: dict[str, Any]) -> list[str]:
         provisioners = [(p["type"], canon(p.get("expressions"))) for p in resource.get("provisioners", [])]
         if provisioners != [("remote-exec", canon({"inline": {"references": [script]}}))]:
             red.append(f"{address}: provisioners {provisioners}, want one remote-exec of {script}")
-        triggers = resource.get("expressions", {}).get("triggers_replace")
-        if canon(triggers) != canon({"references": ["var.registries_boot_reject"]}):
-            red.append(f"{address}: trigger watches more than var.registries_boot_reject")
+        references = (resource.get("expressions", {}).get("triggers_replace") or {}).get("references") or []
+        if sorted(references) != sorted(["var.registries_boot_reject", script]):
+            red.append(f"{address}: trigger watches {references}, want var.registries_boot_reject and {script}")
     for name in ("control_planes", "agents"):
         module = root["module_calls"][name]
         expressions = module["expressions"]
@@ -473,12 +476,14 @@ def check_rule(label: str, case: str, base: dict[str, Any], head: dict[str, Any]
     if added != expected or removed:
         red.append(f"{label}: resource instances added {sorted(added)}, removed {sorted(removed)}, "
                    f"want exactly {sorted(expected)}")
-    trigger = {"registries_boot_reject": [{"ip": ip, "port": port} for ip, port in entries]}
+    boot_reject = cag.outputs(head).get("zz_r0_boot_reject") or {}
+    trigger = {"registries_boot_reject": [{"ip": ip, "port": port} for ip, port in entries],
+               "update_script_sha256": hashlib.sha256((boot_reject.get("script") or "").encode()).hexdigest()}
     for address in sorted(added):
         change = after[address]
         if change["actions"] != ["create"] or canon(change["after"].get("triggers_replace")) != canon(trigger):
             red.append(f"{label}: {address}: trigger {change['after'].get('triggers_replace')}, "
-                       "want registries_boot_reject only")
+                       "want registries_boot_reject and the sha256 of the update script")
 
     changed = sorted(a for a in set(before) & set(after) if canon(before[a]) != canon(after[a]))
     other = [a for a in changed if not (cag.HOST_CLOUDINIT.match(a) or a == cag.CONFIGURE_AUTOSCALER)]
@@ -527,7 +532,6 @@ def check_rule(label: str, case: str, base: dict[str, Any], head: dict[str, Any]
     scripts = sorted(name for name in hashes_before if hashes_after.get(name) != hashes_before[name])
     if scripts:
         red.append(f"{label}: entries changed provisioner scripts: {scripts}")
-    boot_reject = cag.outputs(head).get("zz_r0_boot_reject") or {}
     if boot_reject.get("unit") != unit:
         red.append(f"{label}: local.registries_boot_reject_unit differs from the expected unit")
     red += [f"{label}: {finding}" for finding in check_script(boot_reject.get("script") or "", unit, entries)]
@@ -599,6 +603,9 @@ def in_memory_counter_tests(head: dict[str, Any], base: dict[str, Any], args: ar
     def watch_registries(after: dict[str, Any]) -> None:
         after["triggers_replace"]["registries"] = "mirrors: {}"
 
+    def no_script_hash(after: dict[str, Any]) -> None:
+        del after["triggers_replace"]["update_script_sha256"]
+
     cases = [
         ("pool: unit entry missing", lambda: rule(cag.edit_pool(plan, unit_edit("missing"))), "unit entry missing"),
         ("host: unit entry mode 0600", lambda: rule(cag.edit_host(plan, unit_edit("mode"))), "unit entry permissions"),
@@ -617,7 +624,9 @@ def in_memory_counter_tests(head: dict[str, Any], base: dict[str, Any], args: ar
         ("update script without nft -c", lambda: rule(edit_script(lambda s: s.replace("/usr/sbin/nft -c", "true"))),
          "nft -c"),
         ("trigger watches registries_config", lambda: rule(cag.edit_change(plan, boot_reject, watch_registries)),
-         "want registries_boot_reject only"),
+         "want registries_boot_reject and the sha256"),
+        ("trigger without the update script hash", lambda: rule(cag.edit_change(plan, boot_reject, no_script_hash)),
+         "want registries_boot_reject and the sha256"),
         ("resource missing", lambda: rule(cag.drop_change(plan, boot_reject)), "resource instances added"),
         ("empty input adds a resource",
          lambda: check_same("microos empty", base["microos_empty"], {
@@ -663,6 +672,9 @@ MUTATIONS = {
     "real render: resource without the empty-list guard": (
         "modules/host/main.tf", "count = length(var.registries_boot_reject) > 0 ? 1 : 0", "count = 1",
         "empty input: resource instances added"),
+    "real render: host trigger without the update script hash": (
+        "modules/host/main.tf", "    update_script_sha256   = sha256(var.registries_boot_reject_script)\n", "",
+        "want registries_boot_reject and the sha256"),
     "real render: empty runcmd entry leaves a blank line": (
         "locals.tf", "%{endif}\n${local.cloudinit_runcmd_registries_boot_reject}\nEOT",
         "%{endif}\n\n${local.cloudinit_runcmd_registries_boot_reject}\nEOT", "empty input: planned values changed"),

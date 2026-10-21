@@ -296,12 +296,14 @@ resource "terraform_data" "registries_ca_files" {
 }
 
 # Installs and starts the registries_boot_reject unit; restarts no
-# Kubernetes service.
+# Kubernetes service. The script embeds the unit, so its hash brings a module
+# update that changes the unit to running nodes as well.
 resource "terraform_data" "registries_boot_reject" {
   count = length(var.registries_boot_reject) > 0 ? 1 : 0
 
   triggers_replace = {
     registries_boot_reject = var.registries_boot_reject
+    update_script_sha256   = sha256(var.registries_boot_reject_script)
   }
 
   connection {

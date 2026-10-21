@@ -393,11 +393,13 @@ resource "terraform_data" "autoscaled_nodes_registries_ca_files" {
 }
 
 # Installs and starts the registries_boot_reject unit; restarts no
-# Kubernetes service.
+# Kubernetes service. The script embeds the unit, so its hash brings a module
+# update that changes the unit to running nodes as well.
 resource "terraform_data" "autoscaled_nodes_registries_boot_reject" {
   for_each = length(var.registries_boot_reject) > 0 ? local.autoscaled_nodes : {}
   triggers_replace = {
     registries_boot_reject = var.registries_boot_reject
+    update_script_sha256   = sha256(local.registries_boot_reject_update_script)
   }
 
   connection {
