@@ -1134,6 +1134,9 @@ def base_render_vars() -> dict[str, Any]:
         "nat_router": {"extra_runcmd": ["echo render-harness"]},
         "rancher_bootstrap_password": "",
         "rancher_hostname": "",
+        "registries_ca_files": {
+            "render-harness-ca.pem": "-----BEGIN CERTIFICATE-----\nTUlJcmVuZGVyLWhhcm5lc3M=\n-----END CERTIFICATE-----\n",
+        },
         "ssh_authorized_keys_exclusive": False,
         "ssh_port": 22,
         "traefik_additional_options": ["--log.level=INFO"],
@@ -1185,6 +1188,7 @@ def base_render_vars() -> dict[str, Any]:
         "multinetwork_transport_ipv4_enabled": False,
         "multinetwork_transport_ipv6_enabled": False,
         "metadata_route_repair_script": extract_heredoc("metadata_route_repair_script"),
+        "registries_config_dir": "/etc/rancher/k3s",
         "secrets_encryption_config_file": "/tmp/kh-render-harness-encryption.yaml",
         "secrets_encryption_install_script": rendered_encryption_install_script,
         "secrets_encryption_staging_file": "/tmp/kh-render-harness-encryption-stage.yaml",
