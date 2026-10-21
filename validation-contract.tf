@@ -1284,3 +1284,17 @@ resource "terraform_data" "helm_values_yaml_contract" {
     }
   }
 }
+
+# A tls.ca_file under the registries directory that registries_ca_files does
+# not provide is missing on new nodes, and containerd then fails every pull
+# from that registry without trying the default endpoint. This is a warning,
+# not a precondition, because such a file may come from outside the module.
+check "registries_ca_files_references" {
+  assert {
+    condition = alltrue([
+      for ca_file in local.registries_ca_file_references :
+      !startswith(ca_file, "${local.registries_config_dir}/") || contains(keys(var.registries_ca_files), trimprefix(ca_file, "${local.registries_config_dir}/"))
+    ])
+    error_message = "registries_config points tls.ca_file at ${join(", ", [for ca_file in local.registries_ca_file_references : ca_file if startswith(ca_file, "${local.registries_config_dir}/") && !contains(keys(var.registries_ca_files), trimprefix(ca_file, "${local.registries_config_dir}/"))])}, which registries_ca_files does not provide. New nodes get no such file, and containerd fails every pull from that registry while it is missing."
+  }
+}

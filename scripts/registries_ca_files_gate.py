@@ -28,6 +28,9 @@ Without registries_ca_files the head must plan exactly like the base:
     per reference, first step of the update branch, exit 1 when the file
     holds no certificate, no restart). That changes no planned value and
     starts no SSH run.
+  * check.registries_ca_files_references warns (status fail) exactly when a
+    tls.ca_file under the registries directory is not in
+    registries_ca_files, and passes otherwise.
 
 With one CA (--ca-file, or a throwaway ECDSA P-256 CA made with openssl)
 the head may differ from the base only by:
@@ -44,7 +47,8 @@ the head may differ from the base only by:
     resources keep their triggers,
   * a CA update script that installs the PEM with install -m 0644, removes
     its temporary copy with a trap and restarts no service,
-  * the same ca_file guard rule for the registries update scripts.
+  * the same ca_file guard rule for the registries update scripts and the
+    same reference check result, which now passes.
 
 Counter-tests run after the comparison and must all turn the gate RED, each
 through its own finding: in-memory edits of the head plans (CA entry
@@ -54,10 +58,12 @@ registries trigger, a CA trigger that also watches registries.yaml, a
 missing CA resource, a pool over --max-len, an empty-input plan with a
 new resource, changed cloud-init or a changed script, and a ca_file guard
 that is missing, comes too late, checks another path, does not exit or
-appears without a reference) and real renders of mutated head copies (entry
-mode 0600, a restart in the script, a CA resource without the empty-map
-guard, CA entries or the ca_file guard rendered by a template directive that
-leaves blank lines when the list is empty).
+appears without a reference, a reference check that is missing, silent on
+a dangling ca_file or warns without one) and real renders of mutated head
+copies (entry mode 0600, a restart in the script, a CA resource without the
+empty-map guard, CA entries or the ca_file guard rendered by a template
+directive that leaves blank lines when the list is empty, a reference check
+that always passes).
 
 Exit code 0 = GREEN, 1 = RED.
 """
@@ -97,6 +103,7 @@ HOST_SERVER = re.compile(r'^(module\.(?:control_planes|agents)\["[^"]+"\])\.hclo
 AUTOSCALED_REGISTRIES = re.compile(r'^terraform_data\.autoscaled_nodes_registries\["([^"]+)"\]$')
 REGISTRIES_RESOURCE = re.compile(r'(^|\.)terraform_data\.(?:autoscaled_nodes_)?registries(\[|$)')
 CONFIGURE_AUTOSCALER = "terraform_data.configure_autoscaler[0]"
+REFERENCE_CHECK = "check.registries_ca_files_references"
 REGISTRIES_SCRIPTS = ("k3s_registries_update_script", "rke2_registries_update_script", "k8s_registries_update_script")
 GUARD_PAYLOAD = re.compile(r"^  CA_FILE=\$\(printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d\)$", re.MULTILINE)
 GUARD_CHECK = re.compile(
@@ -172,7 +179,17 @@ def script_locals(tree: Path) -> list[str]:
     return sorted(name for name in names if re.search(rf"^ {{0,2}}{name}\s*=", text, re.MULTILINE))
 
 
-def test_file(args: argparse.Namespace, variants: tuple[str, ...], cases: tuple[str, ...], pem: str) -> str:
+def dangling(variant: str, ca_files: dict[str, str]) -> list[str]:
+    """ca_file references under the CA directory that ca_files does not provide."""
+
+    ca_dir = CA_DIRS[VARIANTS[variant][1]]
+    return [path for path in REFERENCES[variant]
+            if path.startswith(f"{ca_dir}/") and path[len(ca_dir) + 1:] not in ca_files]
+
+
+def test_file(
+    args: argparse.Namespace, variants: tuple[str, ...], cases: tuple[str, ...], pem: str, reference_check: bool,
+) -> str:
     dummy = cig.DUMMY_VARIABLES.replace('count = 0, os = "microos" }', 'count = 1, os = "OS" }')
     if dummy == cig.DUMMY_VARIABLES:
         raise GateError("static agent pool not found in the dummy variables")
@@ -181,13 +198,17 @@ def test_file(args: argparse.Namespace, variants: tuple[str, ...], cases: tuple[
         pool_os, _, extra, _ = VARIANTS[variant]
         for case in cases:
             ca = f"    registries_ca_files = {{ {json.dumps(CA_NAME)} = {json.dumps(pem)} }}\n" if case == "ca" else ""
+            # tofu test turns a failed check block into an error; plan only warns.
+            expect = ""
+            if reference_check and dangling(variant, {CA_NAME: pem} if case == "ca" else {}):
+                expect = f"\n  expect_failures = [{REFERENCE_CHECK}]\n"
             runs += f"""
 run "{variant}_{case}" {{
   command = plan
 
   variables {{
 {dummy.replace('"OS"', json.dumps(pool_os))}{cig.AUTOSCALER_NODEPOOLS.replace('"OS"', json.dumps(pool_os))}{extra}{ca}  }}
-}}
+{expect}}}
 """
     return cig.test_file(args.cli, (), None) + runs
 
@@ -208,7 +229,10 @@ def render(
         outputs += HEAD_OUTPUTS_TF
     (tree / "zz_r0_outputs.tf").write_text(outputs, encoding="utf-8")
     (tree / TEST_DIR).mkdir()
-    (tree / TEST_DIR / "render.tftest.hcl").write_text(test_file(args, variants, cases, pem), encoding="utf-8")
+    reference_check = any(re.search(r'^check "registries_ca_files_references"', path.read_text(encoding="utf-8"), re.M)
+                          for path in tree.glob("*.tf"))
+    (tree / TEST_DIR / "render.tftest.hcl").write_text(test_file(args, variants, cases, pem, reference_check),
+                                                       encoding="utf-8")
     init = [args.cli, "init", "-backend=false", "-input=false", "-no-color", f"-test-directory={TEST_DIR}"]
     if args.plugin_dir:
         init.append(f"-plugin-dir={args.plugin_dir}")
@@ -392,6 +416,18 @@ def check_guard(label: str, base: dict[str, Any], head: dict[str, Any], referenc
     return red, set(REGISTRIES_SCRIPTS) if references else set()
 
 
+def check_references(label: str, plan: dict[str, Any], ca_files: dict[str, str]) -> list[str]:
+    """The plan warns exactly when a ca_file under the CA directory is not in registries_ca_files."""
+
+    missing = dangling(label, ca_files)
+    want = "fail" if missing else "pass"
+    found = [c for c in plan.get("checks", []) if c.get("address", {}).get("to_display") == REFERENCE_CHECK]
+    status = found[0].get("status") if len(found) == 1 else None
+    if status != want:
+        return [f"{label}: {REFERENCE_CHECK} status {status!r}, want {want!r} (dangling {missing})"]
+    return []
+
+
 def check_wiring(configuration: dict[str, Any]) -> list[str]:
     """The CA resources trigger on the CA files only and run the CA script."""
 
@@ -443,7 +479,7 @@ def check_empty(label: str, base: dict[str, Any], head: dict[str, Any]) -> list[
     if canon(outputs_before) != canon(outputs_after):
         red.append(f"{label}: empty input: outputs changed")
     guard_red, guarded = check_guard(label, base, head, REFERENCES[label])
-    red += guard_red
+    red += guard_red + check_references(label, head, {})
     scripts = sorted(name for name in hashes_before if hashes_after.get(name) != hashes_before[name])
     if set(scripts) - guarded or not hashes_before:
         red.append(f"{label}: empty input: provisioner script changed: {sorted(set(scripts) - guarded) or 'no hashes'}")
@@ -526,7 +562,7 @@ def check_ca(
     hashes_before = outputs(base).get("zz_r0_script_sha256") or {}
     hashes_after = outputs(head).get("zz_r0_script_sha256") or {}
     guard_red, guarded = check_guard(label, base, head, REFERENCES[label])
-    red += guard_red
+    red += guard_red + check_references(label, head, {CA_NAME: pem})
     scripts = sorted(name for name in hashes_before if hashes_after.get(name) != hashes_before[name])
     if set(scripts) - guarded:
         red.append(f"{label}: CA input changed provisioner scripts: {sorted(set(scripts) - guarded)}")
@@ -624,6 +660,18 @@ def guard_edit(how: str, guard: str = "") -> Callable[[str], str]:
             lines.remove("    exit 1\n")
         return "".join(lines)
     return edit
+
+
+def set_check(plan: dict[str, Any], status: str | None) -> dict[str, Any]:
+    """Set the reference check status, or drop the check for None (counter-tests only)."""
+
+    result = copy.deepcopy(plan)
+    found = [c for c in result["checks"] if c["address"]["to_display"] == REFERENCE_CHECK]
+    if status is None:
+        result["checks"] = [c for c in result["checks"] if c not in found]
+    for check in found:
+        check["status"] = status
+    return result
 
 
 def ca_lines(text: str, path: str) -> tuple[int, int]:
@@ -742,6 +790,13 @@ def in_memory_counter_tests(
          lambda: check_empty("microos", base["microos_empty"],
                              edit_scripts(renders["microos_empty"], guard_edit("add", guard))),
          "changed without a ca_file reference"),
+        ("registries: no warning for a dangling ca_file",
+         lambda: check_empty("registries", base["registries_empty"], set_check(renders["registries_empty"], "pass")),
+         "status 'pass', want 'fail'"),
+        ("microos: warning without a dangling ca_file",
+         lambda: run_ca("microos", set_check(head["microos"], "fail")), "status 'fail', want 'pass'"),
+        ("registries: reference check missing",
+         lambda: run_ca("registries", set_check(head["registries"], None)), "status None"),
         ("rke2: empty input changes a provisioner script",
          lambda: check_empty("rke2", base["rke2_empty"],
                              change_script_hash(renders["rke2_empty"], "k8s_registries_update_script")),
@@ -755,7 +810,7 @@ def in_memory_counter_tests(
 
 
 MUTATIONS = {
-    # label: (file, old, new, finding)
+    # label: (file, old, new, finding[, variant, default microos])
     "real render: CA entry mode 0600": (
         "locals.tf", '\\n  permissions: \\"0644\\"\\n"', '\\n  permissions: \\"0600\\"\\n"', "CA entry permissions"),
     "real render: restart in the CA update script": (
@@ -766,6 +821,9 @@ MUTATIONS = {
     "real render: ca_file guard leaves a blank line without references": (
         "locals.tf", "%{endfor~}\n  rm -f /etc/rancher/k3s/registries.yaml.bak",
         "%{endfor}\n  rm -f /etc/rancher/k3s/registries.yaml.bak", "changed without a ca_file reference"),
+    "real render: reference check that always passes": (
+        "validation-contract.tf", '!startswith(ca_file, "${local.registries_config_dir}/") || contains(',
+        'true || contains(', "Missing expected failure", "registries"),
     "real render: CA entries rendered by a template directive": (
         "locals.tf", "  path: ${local.kubelet_config_file}\n%{endif}\nEOT",
         "  path: ${local.kubelet_config_file}\n%{endif}\n%{for name, pem in var.registries_ca_files}\n%{endfor}\nEOT",
@@ -777,7 +835,8 @@ def mutation_counter_tests(
     head_tree: Path, scratch: Path, base: dict[str, Any], names: list[str], pem: str, args: argparse.Namespace,
 ) -> list[str]:
     failed = []
-    for number, (label, (name, old, new, finding)) in enumerate(MUTATIONS.items()):
+    for number, (label, (name, old, new, finding, *rest)) in enumerate(MUTATIONS.items()):
+        variant = rest[0] if rest else "microos"
         tree = scratch / f"mutation-{number}"
         shutil.copytree(head_tree, tree, ignore=COPY_IGNORE, symlinks=True)
         source = tree / name
@@ -787,10 +846,16 @@ def mutation_counter_tests(
             failed.append(label)
             continue
         source.write_text(text.replace(old, new), encoding="utf-8")
-        plans = render(tree, args, ("microos",), CASES, pem, names)
-        red = check_empty("microos", base["microos_empty"], plans["microos_empty"])
-        script = outputs(plans["microos_ca"]).get("zz_registries_ca_update_script") or ""
-        red += check_ca("microos", base["microos_empty"], plans["microos_ca"], script, pem, args)[0]
+        try:
+            plans = render(tree, args, (variant,), CASES, pem, names)
+        except GateError as exc:
+            # A check that no longer fails where it must fails the test run.
+            if not cig.counter_test(label, [str(exc)], finding):
+                failed.append(label)
+            continue
+        red = check_empty(variant, base[f"{variant}_empty"], plans[f"{variant}_empty"])
+        script = outputs(plans[f"{variant}_ca"]).get("zz_registries_ca_update_script") or ""
+        red += check_ca(variant, base[f"{variant}_empty"], plans[f"{variant}_ca"], script, pem, args)[0]
         if not cig.counter_test(label, red, finding):
             failed.append(label)
     return failed
