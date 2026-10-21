@@ -3984,7 +3984,7 @@ EOF
 # registries_boot_reject: until kube-proxy has programmed a ClusterIP after a
 # boot, a connection to it leaves the node unanswered and containerd waits
 # 30 s per request before it tries the next endpoint. This oneshot unit rejects
-# such connections with a TCP reset from boot on, so containerd falls back at
+# such connections with a TCP reset early in boot, so containerd falls back at
 # once. The rule sits in the filter output hook (priority 0). kube-proxy DNATs
 # local traffic in the nat output hook (priority -100), which runs first, so
 # the rule never matches once the Service is programmed; pod traffic takes the
@@ -3995,6 +3995,11 @@ EOF
 # the table in one transaction makes every run idempotent and atomic, also
 # when the list changes. The unit has no Requires= on anything and nothing
 # requires it, so a failure never holds back k3s or RKE2.
+# The unit runs after network-pre.target: openSUSE's soft-reboot-cleanup.service
+# (aaa_base, enabled by the SUSE presets) flushes the whole nftables ruleset on
+# every boot and is ordered before that target, like nftables.service and
+# firewalld. k3s and RKE2 wait for network-online.target anyway, so the order
+# costs no boot time.
 registries_boot_reject_unit_name = "kh-registries-boot-reject.service"
 registries_boot_reject_nft = join("", [
   "table inet kh_registries_boot_reject;delete table inet kh_registries_boot_reject;table inet kh_registries_boot_reject{chain output{type filter hook output priority filter;",
@@ -4003,6 +4008,7 @@ registries_boot_reject_nft = join("", [
 ])
 registries_boot_reject_unit = <<EOT
 [Unit]
+After=network-pre.target
 Before=k3s.service k3s-agent.service rke2-server.service rke2-agent.service
 [Service]
 Type=oneshot
