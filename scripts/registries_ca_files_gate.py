@@ -21,7 +21,7 @@ Without registries_ca_files the head must plan exactly like the base:
     every provisioner resource, and it means no resource instance is added,
     so no new SSH run happens,
   * every base resource keeps its configuration (provisioners, triggers,
-    count and for_each; depends_on may grow), and every provisioner script
+    count and for_each) and every depends_on entry, and every provisioner script
     local of the base keeps its sha256. The one exception is a
     registries_config whose configs.*.tls.ca_file references a file: the
     registries update scripts then gain exactly the ca_file guard (one block
@@ -45,6 +45,10 @@ the head may differ from the base only by:
     terraform_data.autoscaled_nodes_registries_ca_files per autoscaled
     node, triggered by the CA files only, while the registries.yaml
     resources keep their triggers,
+  * the registries.yaml resources depending on the CA resources of their
+    module, and no CA resource depending on a registries.yaml resource
+    (depends_on and resource references), so a combined change writes the
+    CA file before registries.yaml restarts Kubernetes,
   * a CA update script that installs the PEM with install -m 0644, removes
     its temporary copy with a trap and restarts no service,
   * the same ca_file guard rule for the registries update scripts and the
@@ -59,11 +63,13 @@ missing CA resource, a pool over --max-len, an empty-input plan with a
 new resource, changed cloud-init or a changed script, and a ca_file guard
 that is missing, comes too late, checks another path, does not exit or
 appears without a reference, a reference check that is missing, silent on
-a dangling ca_file or warns without one) and real renders of mutated head
-copies (entry mode 0600, a restart in the script, a CA resource without the
+a dangling ca_file or warns without one, a CA ordering that is removed or
+reversed, a lost depends_on entry) and real renders of mutated head copies
+(entry mode 0600, a restart in the script, a CA resource without the
 empty-map guard, CA entries or the ca_file guard rendered by a template
 directive that leaves blank lines when the list is empty, a reference check
-that always passes).
+that always passes, registries resources without the CA ordering, the CA
+ordering reversed).
 
 Exit code 0 = GREEN, 1 = RED.
 """
@@ -283,6 +289,67 @@ def config_resources(module: dict[str, Any], prefix: str = "") -> dict[str, dict
     return found
 
 
+def config_depends_on(module: dict[str, Any], prefix: str = "") -> dict[str, list[str]]:
+    """depends_on of every managed resource by module path + address."""
+
+    found = {}
+    for resource in module.get("resources", []):
+        if resource.get("mode") == "managed":
+            found[prefix + resource["address"]] = resource.get("depends_on", [])
+    for name, call in module.get("module_calls", {}).items():
+        found.update(config_depends_on(call.get("module", {}), f"{prefix}module.{name}."))
+    return found
+
+
+def references(value: Any) -> set[str]:
+    """Every expression reference below value."""
+
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "references" and isinstance(item, list):
+                found.update(ref for ref in item if isinstance(ref, str))
+            else:
+                found |= references(item)
+    elif isinstance(value, list):
+        for item in value:
+            found |= references(item)
+    return found
+
+
+def dependency_graph(module: dict[str, Any]) -> dict[str, set[str]]:
+    """Resource -> resources of the same module it waits for (depends_on and references)."""
+
+    def resource_of(ref: str) -> str | None:
+        parts = re.sub(r"\[[^\]]*\]", "", ref).split(".")
+        if parts[0] in ("var", "local", "module", "each", "count", "self", "path", "terraform"):
+            return None
+        return ".".join(parts[:3] if parts[0] == "data" else parts[:2])
+
+    graph: dict[str, set[str]] = {}
+    for resource in module.get("resources", []):
+        edges = {re.sub(r"\[[^\]]*\]", "", dep) for dep in resource.get("depends_on", [])}
+        edges |= {r for ref in references({k: v for k, v in resource.items() if k != "depends_on"})
+                  if (r := resource_of(ref)) and r != resource["address"]}
+        graph[resource["address"]] = edges
+    return graph
+
+
+def waits_for(graph: dict[str, set[str]], start: str, wanted: Callable[[str], bool]) -> list[str]:
+    """Return a dependency path from start to a resource for which wanted is true, or []."""
+
+    seen, stack = {start}, [[start]]
+    while stack:
+        path = stack.pop()
+        for dep in sorted(graph.get(path[-1], ())):
+            if wanted(dep):
+                return path + [dep]
+            if dep not in seen:
+                seen.add(dep)
+                stack.append(path + [dep])
+    return []
+
+
 def host_content(change: dict[str, Any]) -> str:
     return change["after"]["part"][0]["content"]
 
@@ -428,10 +495,38 @@ def check_references(label: str, plan: dict[str, Any], ca_files: dict[str, str])
     return []
 
 
-def check_wiring(configuration: dict[str, Any]) -> list[str]:
-    """The CA resources trigger on the CA files only and run the CA script."""
+# Module call ("" = root) -> (registries.yaml resource, its CA resource).
+ORDERING = {
+    "control_planes": ("terraform_data.registries", "terraform_data.registries_ca_files"),
+    "agents": ("terraform_data.registries", "terraform_data.registries_ca_files"),
+    "": ("terraform_data.autoscaled_nodes_registries", "terraform_data.autoscaled_nodes_registries_ca_files"),
+}
+
+
+def check_ordering(configuration: dict[str, Any]) -> list[str]:
+    """registries.yaml waits for the CA files of its module, never the other way round."""
 
     red: list[str] = []
+    for name, (registries, ca) in ORDERING.items():
+        module = configuration["root_module"]
+        if name:
+            module = module.get("module_calls", {}).get(name, {}).get("module", {})
+        graph, prefix = dependency_graph(module), f"module.{name}." if name else ""
+        if registries not in graph or ca not in graph:
+            red.append(f"{prefix}{registries} or {prefix}{ca} not configured")
+            continue
+        if not waits_for(graph, registries, lambda dep, ca=ca: dep == ca):
+            red.append(f"{prefix}{registries} does not depend on {prefix}{ca}")
+        back = waits_for(graph, ca, lambda dep: bool(REGISTRIES_RESOURCE.search(dep)))
+        if back:
+            red.append(f"{prefix}{ca} depends on a registries resource: {' -> '.join(back)}")
+    return red
+
+
+def check_wiring(configuration: dict[str, Any]) -> list[str]:
+    """The CA resources trigger on the CA files only, run the CA script and come first."""
+
+    red: list[str] = check_ordering(configuration)
     resources = config_resources(configuration["root_module"])
     wanted = {
         "terraform_data.autoscaled_nodes_registries_ca_files": "local.registries_ca_update_script",
@@ -488,6 +583,11 @@ def check_empty(label: str, base: dict[str, Any], head: dict[str, Any]) -> list[
     moved = sorted(a for a in config_before if canon(config_before[a]) != canon(config_after.get(a)))
     if moved:
         red.append(f"{label}: empty input: resource configuration changed: {moved}")
+    depends_before = config_depends_on(base["configuration"]["root_module"])
+    depends_after = config_depends_on(head["configuration"]["root_module"])
+    lost = sorted(a for a in depends_before if not set(depends_before[a]) <= set(depends_after.get(a, [])))
+    if lost:
+        red.append(f"{label}: empty input: depends_on entries lost: {lost}")
     return red
 
 
@@ -674,6 +774,16 @@ def set_check(plan: dict[str, Any], status: str | None) -> dict[str, Any]:
     return result
 
 
+def edit_config(plan: dict[str, Any], module: str, address: str, edit: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    """Edit one resource of the plan configuration (counter-tests only)."""
+
+    result = copy.deepcopy(plan)
+    root = result["configuration"]["root_module"]
+    resources = (root["module_calls"][module]["module"] if module else root)["resources"]
+    edit(next(r for r in resources if r["address"] == address))
+    return result
+
+
 def ca_lines(text: str, path: str) -> tuple[int, int]:
     lines = text.splitlines(keepends=True)
     start = lines.index(f"- path: {path}\n")
@@ -797,6 +907,23 @@ def in_memory_counter_tests(
          lambda: run_ca("microos", set_check(head["microos"], "fail")), "status 'fail', want 'pass'"),
         ("registries: reference check missing",
          lambda: run_ca("registries", set_check(head["registries"], None)), "status None"),
+        ("registries: control plane registries without the CA ordering",
+         lambda: run_ca("registries", edit_config(head["registries"], "control_planes", "terraform_data.registries",
+                                                  lambda r: r.update(depends_on=["terraform_data.initial_readiness"]))),
+         "module.control_planes.terraform_data.registries does not depend on"),
+        ("microos: autoscaled registries without the CA ordering",
+         lambda: run_ca("microos", edit_config(head["microos"], "", "terraform_data.autoscaled_nodes_registries",
+                                               lambda r: r.pop("depends_on"))),
+         "terraform_data.autoscaled_nodes_registries does not depend on"),
+        ("rke2: agent CA files wait for registries.yaml",
+         lambda: run_ca("rke2", edit_config(head["rke2"], "agents", "terraform_data.registries_ca_files",
+                                            lambda r: r["depends_on"].append("terraform_data.registries"))),
+         "module.agents.terraform_data.registries_ca_files depends on a registries resource"),
+        ("microos: empty input loses a depends_on entry",
+         lambda: check_empty("microos", base["microos_empty"],
+                             edit_config(renders["microos_empty"], "agents", "terraform_data.registries",
+                                         lambda r: r.update(depends_on=["terraform_data.registries_ca_files"]))),
+         "empty input: depends_on entries lost"),
         ("rke2: empty input changes a provisioner script",
          lambda: check_empty("rke2", base["rke2_empty"],
                              change_script_hash(renders["rke2_empty"], "k8s_registries_update_script")),
@@ -824,6 +951,21 @@ MUTATIONS = {
     "real render: reference check that always passes": (
         "validation-contract.tf", '!startswith(ca_file, "${local.registries_config_dir}/") || contains(',
         'true || contains(', "Missing expected failure", "registries"),
+    "real render: host registries without the CA ordering": (
+        "modules/host/main.tf", "depends_on = [terraform_data.initial_readiness, terraform_data.registries_ca_files]",
+        "depends_on = [terraform_data.initial_readiness]",
+        "module.control_planes.terraform_data.registries does not depend on"),
+    "real render: autoscaled registries without the CA ordering": (
+        "autoscaler-agents.tf", "  depends_on = [terraform_data.autoscaled_nodes_registries_ca_files]\n", "",
+        "terraform_data.autoscaled_nodes_registries does not depend on"),
+    "real render: CA ordering reversed": (
+        "modules/host/main.tf",
+        ("depends_on = [terraform_data.initial_readiness, terraform_data.registries_ca_files]",
+         "inline = [var.registries_ca_update_script]\n  }\n\n  depends_on = [terraform_data.initial_readiness]\n"),
+        ("depends_on = [terraform_data.initial_readiness]",
+         "inline = [var.registries_ca_update_script]\n  }\n\n"
+         "  depends_on = [terraform_data.initial_readiness, terraform_data.registries]\n"),
+        "terraform_data.registries_ca_files depends on a registries resource"),
     "real render: CA entries rendered by a template directive": (
         "locals.tf", "  path: ${local.kubelet_config_file}\n%{endif}\nEOT",
         "  path: ${local.kubelet_config_file}\n%{endif}\n%{for name, pem in var.registries_ca_files}\n%{endfor}\nEOT",
@@ -841,11 +983,14 @@ def mutation_counter_tests(
         shutil.copytree(head_tree, tree, ignore=COPY_IGNORE, symlinks=True)
         source = tree / name
         text = source.read_text(encoding="utf-8")
-        if text.count(old) != 1:
+        pairs = list(zip(old, new)) if isinstance(old, tuple) else [(old, new)]
+        if any(text.count(anchor) != 1 for anchor, _ in pairs):
             print(f"  counter-test {label}: mutation anchor not found")
             failed.append(label)
             continue
-        source.write_text(text.replace(old, new), encoding="utf-8")
+        for anchor, replacement in pairs:
+            text = text.replace(anchor, replacement)
+        source.write_text(text, encoding="utf-8")
         try:
             plans = render(tree, args, (variant,), CASES, pem, names)
         except GateError as exc:
