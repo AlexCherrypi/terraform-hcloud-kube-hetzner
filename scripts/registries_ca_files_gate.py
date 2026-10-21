@@ -71,6 +71,10 @@ directive that leaves blank lines when the list is empty, a reference check
 that always passes, registries resources without the CA ordering, the CA
 ordering reversed).
 
+--variants renders only some variants, for example to measure a bundle of
+two CAs (a CA rotation) that does not fit the RKE2 pools. Such a partial run
+skips the counter-tests and says so in its last line.
+
 Exit code 0 = GREEN, 1 = RED.
 """
 
@@ -1035,8 +1039,14 @@ def main() -> int:
     parser.add_argument("--delta-min", type=int, default=300)
     parser.add_argument("--delta-max", type=int, default=1200)
     parser.add_argument("--no-counter-test", action="store_true", help="skip the mutated real renders")
+    parser.add_argument("--variants", default=",".join(VARIANTS),
+                        help="comma-separated variants to render; a subset skips the counter-tests")
     parser.add_argument("--keep", help="keep the scratch trees and plans in this new directory")
     args = parser.parse_args()
+    variants = tuple(args.variants.split(","))
+    if not variants or not set(variants) <= set(VARIANTS):
+        parser.error(f"--variants must be a subset of {','.join(VARIANTS)}")
+    partial = set(variants) != set(VARIANTS)
 
     scratch = Path(args.keep) if args.keep else Path(tempfile.mkdtemp(prefix="kh-registries-ca-gate-"))
     if args.keep:
@@ -1050,11 +1060,12 @@ def main() -> int:
         names = sorted(set(script_locals(base_tree)) & set(script_locals(head_tree)))
         print(f"rendering base {args.base} and head {args.head} ({args.cli} test -verbose -json, mocked cloud providers)")
         print(f"  CA: {len(pem)} B PEM, {len(names)} provisioner script locals hashed")
-        base = render(base_tree, args, tuple(VARIANTS), ("empty",), pem, names)
-        head = render(head_tree, args, tuple(VARIANTS), CASES, pem, names)
+        base = render(base_tree, args, variants, ("empty",), pem, names)
+        head = render(head_tree, args, variants, CASES, pem, names)
         scripts = {variant: outputs(head[f"{variant}_ca"]).get("zz_registries_ca_update_script") or ""
-                   for variant in VARIANTS}
-        for variant, (_, distribution, _, _) in VARIANTS.items():
+                   for variant in variants}
+        for variant in variants:
+            distribution = VARIANTS[variant][1]
             empty_red = check_empty(variant, base[f"{variant}_empty"], head[f"{variant}_empty"])
             same = not empty_red
             print(f"{variant}: empty input {'plans exactly like the base' if same else 'differs from the base'} "
@@ -1071,6 +1082,8 @@ def main() -> int:
 
         if red:
             print("counter-tests skipped: the head is already RED")
+        elif partial:
+            print("counter-tests skipped: they need all variants")
         else:
             print("counter-tests (each must be RED):")
             red += [f"counter-test stayed GREEN: {label}"
@@ -1084,7 +1097,10 @@ def main() -> int:
     finally:
         if not args.keep:
             shutil.rmtree(scratch, ignore_errors=True)
-    print("GREEN" if not red else f"RED ({len(red)} findings)")
+    if partial and not red:
+        print(f"GREEN (partial run: {', '.join(variants)}; no counter-tests)")
+    else:
+        print("GREEN" if not red else f"RED ({len(red)} findings)")
     return 0 if not red else 1
 
 
