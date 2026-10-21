@@ -65,6 +65,8 @@ module "agents" {
   registries_update_script      = local.k8s_registries_update_script
   registries_ca_files           = var.registries_ca_files
   registries_ca_update_script   = local.registries_ca_update_script
+  registries_boot_reject        = var.registries_boot_reject
+  registries_boot_reject_script = local.registries_boot_reject_update_script
   cloudinit_write_files_common  = local.cloudinit_write_files_common
   metadata_route_repair_script  = local.metadata_route_repair_script
   kubelet_config                = var.kubelet_config

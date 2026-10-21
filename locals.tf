@@ -4012,6 +4012,31 @@ ExecStart=/usr/sbin/nft '${local.registries_boot_reject_nft}'
 WantedBy=multi-user.target
 EOT
 
+# Installs the registries_boot_reject unit on running nodes and applies its
+# rules at once. kube-proxy's DNAT is in place there, so the rules do not
+# change any working connection. Nothing but this unit is restarted. The unit
+# file is renamed into place from its own directory, so it gets the
+# directory's SELinux label.
+registries_boot_reject_update_script = <<EOF
+set -eu
+UNIT_DIR=/etc/systemd/system
+UNIT=${local.registries_boot_reject_unit_name}
+/usr/sbin/nft -c '${local.registries_boot_reject_nft}'
+UNIT_TMP=$(mktemp)
+trap 'rm -f "$UNIT_TMP" "$UNIT_DIR/.$UNIT.new"' EXIT
+printf '%s' '${base64encode(local.registries_boot_reject_unit)}' | base64 -d > "$UNIT_TMP"
+if cmp -s "$UNIT_TMP" "$UNIT_DIR/$UNIT" && [ "$(stat -c '%a %u %g' "$UNIT_DIR/$UNIT")" = "644 0 0" ]; then
+  echo "$UNIT_DIR/$UNIT is up to date"
+else
+  install -m 0644 -o root -g root "$UNIT_TMP" "$UNIT_DIR/.$UNIT.new"
+  mv -fT "$UNIT_DIR/.$UNIT.new" "$UNIT_DIR/$UNIT"
+  systemctl daemon-reload
+  echo "Updated $UNIT_DIR/$UNIT"
+fi
+systemctl enable "$UNIT"
+systemctl restart "$UNIT"
+EOF
+
 cloudinit_write_files_common_base = <<EOT
 - path: /usr/local/sbin/kube-hetzner-reconcile-authorized-keys
   content: ${base64gzip(file("${path.module}/scripts/reconcile-authorized-keys.sh"))}

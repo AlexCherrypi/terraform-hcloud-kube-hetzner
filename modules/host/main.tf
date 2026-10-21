@@ -295,6 +295,35 @@ resource "terraform_data" "registries_ca_files" {
   depends_on = [terraform_data.initial_readiness]
 }
 
+# Installs and starts the registries_boot_reject unit; restarts no
+# Kubernetes service.
+resource "terraform_data" "registries_boot_reject" {
+  count = length(var.registries_boot_reject) > 0 ? 1 : 0
+
+  triggers_replace = {
+    registries_boot_reject = var.registries_boot_reject
+  }
+
+  connection {
+    user           = "root"
+    private_key    = var.ssh_private_key
+    agent_identity = local.ssh_agent_identity
+    host           = local.provisioner_connection_host
+    port           = var.ssh_port
+
+    bastion_host        = var.ssh_bastion.bastion_host
+    bastion_port        = var.ssh_bastion.bastion_port
+    bastion_user        = var.ssh_bastion.bastion_user
+    bastion_private_key = var.ssh_bastion.bastion_private_key
+  }
+
+  provisioner "remote-exec" {
+    inline = [var.registries_boot_reject_script]
+  }
+
+  depends_on = [terraform_data.initial_readiness]
+}
+
 resource "terraform_data" "kubelet_config" {
   count = var.kubelet_config != "" ? 1 : 0
 

@@ -188,6 +188,19 @@ variable "registries_ca_update_script" {
   type    = string
 }
 
+variable "registries_boot_reject" {
+  default = []
+  type = list(object({
+    ip   = string
+    port = number
+  }))
+}
+
+variable "registries_boot_reject_script" {
+  default = ""
+  type    = string
+}
+
 variable "kubelet_config" {
   default = ""
   type    = string

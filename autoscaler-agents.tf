@@ -392,6 +392,32 @@ resource "terraform_data" "autoscaled_nodes_registries_ca_files" {
   }
 }
 
+# Installs and starts the registries_boot_reject unit; restarts no
+# Kubernetes service.
+resource "terraform_data" "autoscaled_nodes_registries_boot_reject" {
+  for_each = length(var.registries_boot_reject) > 0 ? local.autoscaled_nodes : {}
+  triggers_replace = {
+    registries_boot_reject = var.registries_boot_reject
+  }
+
+  connection {
+    user           = "root"
+    private_key    = var.ssh_private_key
+    agent_identity = local.ssh_agent_identity
+    host           = local.tailscale_use_tailnet_for_terraform ? "${each.value.name}.${local.tailscale_magicdns_domain}" : coalesce(each.value.ipv4_address, each.value.ipv6_address, try(one(each.value.network).ip, null))
+    port           = var.ssh_port
+
+    bastion_host        = local.ssh_bastion.bastion_host
+    bastion_port        = local.ssh_bastion.bastion_port
+    bastion_user        = local.ssh_bastion.bastion_user
+    bastion_private_key = local.ssh_bastion.bastion_private_key
+  }
+
+  provisioner "remote-exec" {
+    inline = [local.registries_boot_reject_update_script]
+  }
+}
+
 resource "terraform_data" "autoscaled_nodes_kubelet_config" {
   for_each = var.kubelet_config != "" ? local.autoscaled_nodes : {}
   triggers_replace = {
