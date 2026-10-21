@@ -1170,7 +1170,7 @@ module "kube-hetzner" {
   # endpoint. With an entry, every node rejects its own TCP connections to the endpoint with a TCP reset
   # until kube-proxy translates the ClusterIP, so containerd falls back at once. Needs kube-proxy and
   # addresses inside service_ipv4_cidr; pod traffic is never affected. Changes reach existing nodes over
-  # SSH without a k3s restart. Adds about 230 bytes to the user_data. The default is empty.
+  # SSH without a k3s restart. Adds about 250 bytes to the user_data. The default is empty.
   # registries_boot_reject = [
   #   { ip = "10.43.0.50", port = 5000 },
   # ]
