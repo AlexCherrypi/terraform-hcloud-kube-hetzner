@@ -3994,7 +3994,11 @@ EOF
 # or the network policy controller change. Creating, deleting and recreating
 # the table in one transaction makes every run idempotent and atomic, also
 # when the list changes. The unit has no Requires= on anything and nothing
-# requires it, so a failure never holds back k3s or RKE2.
+# requires it, and the "-" before the command makes systemd log a failing or
+# missing nft without marking the unit failed. A failure therefore never holds
+# back k3s or RKE2 and never leaves the system degraded, which would stall the
+# readiness wait of a new control plane or agent. The update script for running
+# nodes checks the rules with nft -c and fails loudly instead.
 # The unit runs after network-pre.target: openSUSE's soft-reboot-cleanup.service
 # (aaa_base, enabled by the SUSE presets) flushes the whole nftables ruleset on
 # every boot and is ordered before that target, like nftables.service and
@@ -4013,7 +4017,7 @@ Before=k3s.service k3s-agent.service rke2-server.service rke2-agent.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft '${local.registries_boot_reject_nft}'
+ExecStart=-/usr/sbin/nft '${local.registries_boot_reject_nft}'
 [Install]
 WantedBy=multi-user.target
 EOT

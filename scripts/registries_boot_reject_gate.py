@@ -27,7 +27,8 @@ With entries the head may differ from the base only by:
     RemainAfterExit, ordered after network-pre.target, which openSUSE's
     nftables flush at boot (soft-reboot-cleanup.service) runs before, and
     before k3s, k3s-agent, rke2-server and rke2-agent,
-    WantedBy=multi-user.target, one nft transaction that
+    WantedBy=multi-user.target, a "-" before the command so that a failing
+    nft never marks the unit failed, one nft transaction that
     recreates the table inet kh_registries_boot_reject with a filter output
     chain at priority filter and one "reject with tcp reset" rule per entry),
   * one added runcmd item, [systemctl, enable, --now, <unit>], after
@@ -60,15 +61,16 @@ and --max-len 27500 measures a CA rotation.
 
 Counter-tests run after the comparison and must all turn the gate RED:
 in-memory edits of the head plans (unit entry missing, wrong mode, unit
-altered, unit not ordered after network-pre.target, runcmd item missing or
-after the install, a pool over --max-len, an empty-input plan with an added
-resource or a changed script, a restart of k3s in the update script, a
-trigger that watches registries_config) and real renders of mutated head
-copies (unit mode 0600, the rule hooked before the DNAT, a unit not ordered
-after network-pre.target, a pool without the unit, the runcmd item after the
-agent install, a resource without the empty-list guard, a blank line left by
-the empty runcmd entry, a k3s restart in the update script, address and
-kube-proxy checks that always pass).
+altered, unit not ordered after network-pre.target, a failing nft that
+marks the unit failed, runcmd item missing or after the install, a pool
+over --max-len, an empty-input plan with an added resource or a changed
+script, a restart of k3s in the update script, a trigger that watches
+registries_config) and real renders of mutated head copies (unit mode 0600,
+the rule hooked before the DNAT, a unit not ordered after network-pre.target,
+a pool without the unit, the runcmd item after the agent install, a resource
+without the empty-list guard, a blank line left by the empty runcmd entry, a
+k3s restart in the update script, address and kube-proxy checks that always
+pass).
 
 Exit code 0 = GREEN, 1 = RED.
 """
@@ -162,7 +164,7 @@ def expected_unit(entries: list[tuple[str, int]]) -> str:
     return ("[Unit]\nAfter=network-pre.target\n"
             "Before=k3s.service k3s-agent.service rke2-server.service rke2-agent.service\n"
             "[Service]\nType=oneshot\nRemainAfterExit=yes\n"
-            f"ExecStart=/usr/sbin/nft '{nft_script(entries)}'\n"
+            f"ExecStart=-/usr/sbin/nft '{nft_script(entries)}'\n"
             "[Install]\nWantedBy=multi-user.target\n")
 
 
@@ -560,6 +562,9 @@ def unit_edit(how: str) -> Callable[[str], str]:
         elif how == "content":
             exec_start = next(i for i in range(start, end) if "priority filter" in lines[i])
             lines[exec_start] = lines[exec_start].replace("priority filter", "priority -150")
+        elif how == "fail-hard":
+            exec_start = next(i for i in range(start, end) if "ExecStart=-/" in lines[i])
+            lines[exec_start] = lines[exec_start].replace("ExecStart=-/", "ExecStart=/")
         elif how == "no-after":
             del lines[next(i for i in range(start, end) if lines[i].strip() == "After=network-pre.target")]
         elif how == "no-runcmd":
@@ -601,6 +606,8 @@ def in_memory_counter_tests(head: dict[str, Any], base: dict[str, Any], args: ar
          "unit content differs"),
         ("host: unit not ordered after network-pre.target",
          lambda: rule(cag.edit_host(plan, unit_edit("no-after"))), "unit content differs"),
+        ("pool: a failing nft marks the unit failed",
+         lambda: rule(cag.edit_pool(plan, unit_edit("fail-hard"))), "unit content differs"),
         ("host: runcmd item missing", lambda: rule(cag.edit_host(plan, unit_edit("no-runcmd"))), "runcmd item"),
         ("pool: runcmd item after the agent install", lambda: rule(cag.edit_pool(plan, unit_edit("late-runcmd"))),
          "runs after the agent install script"),
