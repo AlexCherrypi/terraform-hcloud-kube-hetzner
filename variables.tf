@@ -3151,12 +3151,22 @@ variable "registries_ca_files" {
     error_message = "registries_ca_files keys must be plain file names ending in .crt or .pem."
   }
 
+  # containerd rejects the whole registry, default endpoint included, when a
+  # ca_file holds no certificate. Every BEGIN needs its END CERTIFICATE line,
+  # and each body must decode as base64 to a DER SEQUENCE ("MI").
   validation {
     condition = alltrue([
-      for pem in values(var.registries_ca_files) :
-      length(regexall("-----BEGIN CERTIFICATE-----", pem)) > 0 && length(regexall("-----BEGIN ", pem)) == length(regexall("-----BEGIN CERTIFICATE-----", pem))
+      for pem in values(var.registries_ca_files) : (
+        length(regexall("-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\\s]+-----END CERTIFICATE-----", pem)) > 0 &&
+        length(regexall("-----BEGIN ", pem)) == length(regexall("-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\\s]+-----END CERTIFICATE-----", pem)) &&
+        length(regexall("-----END ", pem)) == length(regexall("-----BEGIN ", pem)) &&
+        alltrue([
+          for block in regexall("-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\\s]+)-----END CERTIFICATE-----", pem) :
+          startswith(replace(block[0], "/\\s/", ""), "MI") && can(textdecodebase64(replace(block[0], "/\\s/", ""), "ISO-8859-1"))
+        ])
+      )
     ])
-    error_message = "registries_ca_files values must be PEM certificates without private keys or other PEM blocks."
+    error_message = "registries_ca_files values must be PEM certificates: complete BEGIN/END CERTIFICATE blocks of base64 DER, without private keys or other PEM blocks."
   }
 }
 
